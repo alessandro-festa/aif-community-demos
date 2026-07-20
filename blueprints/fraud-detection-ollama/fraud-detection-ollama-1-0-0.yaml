@@ -1,0 +1,193 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: fraud-detection-ollama
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: fraud-detection-ollama-1-0-0
+# Fraud / AML detection (Ollama, CPU).
+# Airflow generates a synthetic fraud graph (SantanderAI/gen-fraud-graph, Apache-2.0),
+# loads it into PostgreSQL, engineers graph/behavioural features, trains an XGBoost
+# classifier, and pushes per-account feature vectors into Milvus for anomaly detection.
+# A local SUSE UI reads the results and uses a local LLM (Ollama, qwen2.5:3b) as an AML
+# analyst to explain flagged cases. All components from the SUSE Application Collection.
+#
+# Inspired by and with thanks to:
+#   * SantanderAI/gen-fraud-graph  (Apache-2.0) — the synthetic fraud-graph generator
+#     this blueprint builds on:  https://github.com/SantanderAI/gen-fraud-graph
+#   * srinivas-gajulaa/genai-fraud-detection — the ML-score + LLM-analyst pattern.
+spec:
+  source: SUSE
+  displayName: Fraud / AML Detection (Ollama, CPU)
+  version: 1.0.0
+  description: |
+    Financial-crime / money-laundering / anomaly-detection pipeline. Apache Airflow
+    generates and manipulates a synthetic fraud graph (accounts + transactions with
+    injected laundering rings — SantanderAI/gen-fraud-graph, Apache-2.0), stores it in
+    PostgreSQL, trains an XGBoost classifier on the labelled data, and indexes per-account
+    behavioural feature vectors in Milvus for anomaly detection. A local SUSE-styled
+    investigator UI shows dataset stats, model metrics and flagged accounts, and uses a
+    local LLM (Ollama, qwen2.5:3b) as an AML analyst to classify + explain flagged cases.
+
+    Thanks to SantanderAI/gen-fraud-graph (https://github.com/SantanderAI/gen-fraud-graph)
+    for inspiring this blueprint, and to srinivas-gajulaa/genai-fraud-detection for the
+    analyst-explanation pattern. gen-fraud-graph is Apache-2.0 and not an official Banco
+    Santander product; this blueprint installs it from source in the Airflow pipeline.
+
+    Prerequisites: the SUSE AI Factory operator, the application-collection ClusterRepo
+    (+ credentials secret), and a default StorageClass. After importing, create an
+    AIWorkload from this Blueprint in the AI Factory UI, run the three DAGs, then launch
+    the local UI from the marketplace guide. Dataset size is controlled by SCALE_FACTOR
+    (default 0.001 — the whole point of using Airflow is scaling this up).
+  components:
+  # ----------------------------------------------------------------------- #
+  # PostgreSQL — tabular store for accounts / transactions / labels / scores.
+  # ----------------------------------------------------------------------- #
+  - chartName: postgresql
+    chartRepo: application-collection
+    chartVersion: 0.6.0
+    values:
+      fullnameOverride: fraud-db
+      image:
+        registry: dp.apps.rancher.io
+        repository: containers/postgresql
+      auth:
+        database: fraud
+        username: fraud
+        password: fraud
+        postgresPassword: fraudadmin
+      primary:
+        persistence:
+          enabled: true
+          size: 8Gi
+  # ----------------------------------------------------------------------- #
+  # Milvus — per-account behavioural feature vectors for anomaly detection.
+  # ----------------------------------------------------------------------- #
+  - chartName: milvus
+    chartRepo: application-collection
+    chartVersion: 5.0.22
+    values:
+      cluster:
+        enabled: false
+      image:
+        all:
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+          repository: containers/milvus
+          tag: 2.6.18-8.4
+      etcd:
+        enabled: true
+        replicaCount: 1
+      kafka:
+        enabled: false
+      minio:
+        enabled: true
+        mode: standalone
+        name: minio
+        replicas: 1
+        rootPath: file
+        users:
+        - accessKey: minioadmin
+          policy: consoleAdmin
+          secretKey: minioadmin
+      proxy:
+        enabled: true
+        http:
+          enabled: true
+      standalone:
+        messageQueue: woodpecker
+        persistence:
+          enabled: true
+          persistentVolumeClaim:
+            accessModes: ReadWriteOnce
+            size: 50Gi
+      streaming:
+        enabled: true
+        woodpecker:
+          embedded: true
+          storage:
+            type: minio
+      service:
+        port: 19530
+        portName: milvus
+        type: ClusterIP
+  # ----------------------------------------------------------------------- #
+  # Ollama — local LLM (AML analyst), CPU.
+  # ----------------------------------------------------------------------- #
+  - chartName: ollama
+    chartRepo: application-collection
+    chartVersion: 1.55.0
+    values:
+      fullnameOverride: ollama
+      image:
+        pullPolicy: IfNotPresent
+        registry: dp.apps.rancher.io
+        repository: containers/ollama
+        tag: 0.21.2-11.48
+      ollama:
+        gpu:
+          enabled: false
+          draEnabled: false
+        models:
+          pull:
+          - qwen2.5:3b
+          run:
+          - qwen2.5:3b
+        port: 11434
+      persistentVolume:
+        enabled: true
+        accessModes:
+        - ReadWriteOnce
+        size: 20Gi
+      service:
+        port: 11434
+        type: ClusterIP
+  # ----------------------------------------------------------------------- #
+  # Apache Airflow — orchestrates generate → train → anomaly. DAGs via git-sync.
+  # ----------------------------------------------------------------------- #
+  - chartName: apache-airflow
+    chartRepo: application-collection
+    chartVersion: 1.22.0
+    values:
+      executor: LocalExecutor
+      redis:
+        enabled: false
+      flower:
+        enabled: false
+      images:
+        airflow:
+          repository: containers/apache-airflow
+          tag: 3.2.2-8.14
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+      dags:
+        gitSync:
+          enabled: true
+          repo: https://github.com/alessandro-festa/aif-community-demos.git
+          branch: main
+          ref: main
+          rev: HEAD
+          depth: 1
+          subPath: blueprints/fraud-detection-ollama/dags
+          period: 30s
+      env:
+      - name: POSTGRES_URI
+        value: postgresql://fraud:fraud@fraud-db:5432/fraud
+      - name: MILVUS_URI
+        value: http://milvus:19530
+      - name: SCALE_FACTOR
+        value: "0.001"
+      # The DAGs need real libraries (installed at Airflow start). Demo-grade; for
+      # production bake these into a custom Airflow image instead.
+      - name: _PIP_ADDITIONAL_REQUIREMENTS
+        value: "pandas numpy networkx scikit-learn xgboost imbalanced-learn psycopg2-binary requests git+https://github.com/SantanderAI/gen-fraud-graph.git"
+      ingress:
+        apiServer:
+          enabled: true
+          ingressClassName: nginx
+          annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          hosts:
+          - name: fraud-airflow
+            tls:
+              enabled: true

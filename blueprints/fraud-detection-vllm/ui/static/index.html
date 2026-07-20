@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fraud / AML Investigator</title>
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/suse.css" />
+</head>
+<body>
+  <header>
+    <img src="/favicon.svg" alt="SUSE" />
+    <h1>Fraud / AML Investigator</h1>
+    <span class="tag" id="tag">local LLM · Airflow · SUSE</span>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Overview</h2>
+      <div id="health" class="muted"></div>
+      <div id="overview" class="section muted">Loading…</div>
+      <h2 style="margin-top:18px;">Flagged accounts</h2>
+      <div id="flagged"><span class="muted">…</span></div>
+    </section>
+
+    <section>
+      <div class="card section">
+        <h2>Case detail</h2>
+        <div id="detail" class="muted">Select a flagged account to investigate.</div>
+      </div>
+      <div class="card section">
+        <h2>AML analyst (LLM)</h2>
+        <div id="verdict" class="muted">Open a case and click “Explain with LLM”.</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

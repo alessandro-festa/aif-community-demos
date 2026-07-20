@@ -1,0 +1,64 @@
+id: fraud-detection-vllm
+displayName: Fraud / AML Detection (vLLM, GPU)
+description: >-
+  Financial-crime / money-laundering / anomaly detection. Airflow generates a synthetic
+  fraud graph (SantanderAI/gen-fraud-graph), trains an XGBoost classifier, and indexes
+  behavioural vectors in Milvus for anomaly detection; an LLM served by vLLM on GPU
+  (Qwen/Qwen2.5-3B-Instruct) acts as an AML analyst explaining flagged accounts. Requires a
+  real GPU node. With thanks to SantanderAI/gen-fraud-graph for the inspiration.
+category: ai-blueprints
+tags: [fraud, aml, airflow, xgboost, vllm, milvus, anomaly, gpu]
+blueprintFile: fraud-detection-vllm-1-0-0.yaml
+prerequisites:
+  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
+  - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
+  - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
+  - {id: gpuop, label: "GPU Operator",                    kind: namespace, name: gpu-operator}
+localFrontend:
+  dir: ui
+  runtime: python
+  install:
+    - "-r ui/requirements.txt"
+  entry: app.main:app
+  port: 8000
+  openPath: /
+  env:
+    POSTGRES_URI: "postgresql://fraud:fraud@localhost:5432/fraud"
+    MILVUS_URI: "http://localhost:19530"
+    OPENAI_BASE_URL: "http://localhost:8000/v1"
+    LLM_MODEL: "Qwen/Qwen2.5-3B-Instruct"
+    OPENAI_API_KEY: "EMPTY"
+  portForwards:
+    - {name: fraud-db, service: fraud-db, local: 5432, remote: 5432}
+    - {name: milvus, service: milvus, local: 19530, remote: 19530}
+    - {name: vllm, service: vllm-router-service, local: 8000, remote: 80}
+guide:
+  - title: Import the blueprint
+    body: |
+      Applies the Fraud / AML (vLLM) Blueprint CR to the selected cluster. This adds it to the
+      SUSE AI Factory catalog — it does not deploy anything yet.
+    action: {type: import}
+  - title: Create the AIWorkload (SUSE AI Factory UI)
+    body: |
+      In the SUSE AI Factory UI, go to **Blueprints → Fraud / AML Detection (vLLM) → Create
+      AIWorkload**, choose a target **namespace**, and deploy. This needs a node with a **real
+      NVIDIA GPU** and the GPU Operator; vLLM downloads `Qwen/Qwen2.5-3B-Instruct` on first
+      start. Airflow also installs the pipeline's Python libraries at start. Wait until
+      everything is Ready, then enter the namespace you chose below.
+    action: {type: namespace-input}
+  - title: Run the pipeline in Airflow
+    body: |
+      Open the Airflow UI (`fraud-airflow` ingress) and trigger, in order:
+      **`generate_fraud_dataset`** → **`engineer_and_train`** → **`flag_and_anomaly`**.
+      Raise `SCALE_FACTOR` on the blueprint for a bigger dataset.
+  - title: Launch the investigator UI
+    body: |
+      Starts `kubectl port-forward` to Postgres (5432), Milvus (19530) and the vLLM router
+      (`vllm-router-service:80`) and runs the SUSE investigator dashboard locally. If your Helm
+      release name isn't `vllm`, adjust the port-forward service to `<release>-router-service`.
+    action: {type: start-frontend}
+  - title: Investigate flagged accounts
+    body: |
+      Open the dashboard: review dataset stats + model metrics + flagged accounts, drill into
+      an account, and click **Explain with LLM** for an AML analyst verdict.
+    action: {type: open-url, url: "http://localhost:8000"}
