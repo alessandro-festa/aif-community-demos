@@ -170,18 +170,16 @@ func (m *Manager) StartFrontend(bp catalog.Blueprint, kubeCtx, namespace string,
 		}
 	}
 
-	// 3. port-forwards (long-running).
+	// 3. port-forwards (supervised — kubectl port-forward exits on a connection
+	// reset / pod restart and does NOT reconnect, so we restart it for the life
+	// of the session).
 	for _, pf := range lf.PortForwards {
 		spec := fmt.Sprintf("%d:%d", pf.Local, pf.Remote)
-		log(fmt.Sprintf("port-forward %s svc/%s %s (ns %s)", pf.Name, pf.Service, spec, namespace))
-		cmd := exec.CommandContext(ctx, "kubectl", "--context", kubeCtx, "-n", namespace,
-			"port-forward", "svc/"+pf.Service, spec)
-		pipeToHub(cmd, hub, "["+pf.Name+"] ")
-		if err := cmd.Start(); err != nil {
-			cancel()
-			return nil, fmt.Errorf("port-forward %s: %w", pf.Name, err)
-		}
+		log(fmt.Sprintf("port-forward %s svc/%s %s (ns %s) [supervised]", pf.Name, pf.Service, spec, namespace))
+		go supervisePortForward(ctx, hub, kubeCtx, namespace, pf)
 	}
+	// Give the forwards a moment to establish before the readiness check.
+	time.Sleep(2 * time.Second)
 
 	// 4. uvicorn (long-running).
 	port := lf.Port
@@ -273,6 +271,33 @@ func runBlocking(ctx context.Context, dir string, env []string, log func(string)
 		log(scan.Text())
 	}
 	return cmd.Wait()
+}
+
+// supervisePortForward keeps a `kubectl port-forward` alive for the life of the
+// session context, restarting it (with a short backoff) whenever it exits —
+// kubectl port-forward does not reconnect on its own after a dropped connection
+// or a target pod restart.
+func supervisePortForward(ctx context.Context, hub *LogHub, kubeCtx, namespace string, pf catalog.PortForward) {
+	spec := fmt.Sprintf("%d:%d", pf.Local, pf.Remote)
+	for ctx.Err() == nil {
+		cmd := exec.CommandContext(ctx, "kubectl", "--context", kubeCtx, "-n", namespace,
+			"port-forward", "svc/"+pf.Service, spec)
+		pipeToHub(cmd, hub, "["+pf.Name+"] ")
+		if err := cmd.Start(); err != nil {
+			hub.Emit(fmt.Sprintf("[%s] failed to start port-forward: %v", pf.Name, err))
+		} else {
+			cmd.Wait()
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		hub.Emit(fmt.Sprintf("[%s] port-forward exited; restarting…", pf.Name))
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 // pipeToHub wires a long-running command's combined output into a log hub.

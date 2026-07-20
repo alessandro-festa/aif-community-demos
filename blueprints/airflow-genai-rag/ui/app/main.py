@@ -91,12 +91,33 @@ def _milvus_post(path: str, body: dict) -> dict:
     return data
 
 
-def milvus_collection_ready() -> bool:
+def milvus_status() -> tuple[bool, bool]:
+    """Return (reachable, has_kb_collection) so callers can distinguish a broken
+    port-forward from a genuinely missing collection."""
     try:
         data = _milvus_post("/v2/vectordb/collections/list", {})
-        return KB_COLLECTION in (data.get("data") or [])
+        return True, KB_COLLECTION in (data.get("data") or [])
     except Exception:
-        return False
+        return False, False
+
+
+def milvus_collection_ready() -> bool:
+    return milvus_status()[1]
+
+
+def _require_milvus_collection() -> None:
+    """Raise a precise HTTP error if Milvus is unreachable or kb is missing."""
+    reachable, has_kb = milvus_status()
+    if not reachable:
+        raise HTTPException(
+            502,
+            f"Milvus unreachable at {MILVUS_URI} — is the port-forward up? "
+            "(In the marketplace guide, Stop and re-Start the demo UI.)",
+        )
+    if not has_kb:
+        raise HTTPException(
+            409, f"Collection {KB_COLLECTION!r} not found — run the ingest DAG first."
+        )
 
 
 def milvus_search(vector: list[float], top_k: int) -> list[dict]:
@@ -176,10 +197,7 @@ def models():
 
 @app.post("/api/search")
 def search(req: SearchReq):
-    if not milvus_collection_ready():
-        raise HTTPException(
-            409, f"Collection {KB_COLLECTION!r} not found — run the ingest DAG first."
-        )
+    _require_milvus_collection()
     try:
         vector = ollama_embed(req.query)
         return {"sources": milvus_search(vector, req.top_k)}
@@ -193,10 +211,7 @@ def search(req: SearchReq):
 def generate(req: GenerateReq):
     if not req.topic.strip():
         raise HTTPException(400, "topic is required")
-    if not milvus_collection_ready():
-        raise HTTPException(
-            409, f"Collection {KB_COLLECTION!r} not found — run the ingest DAG first."
-        )
+    _require_milvus_collection()
     model = (req.model or GEN_MODEL).strip()
     try:
         vector = ollama_embed(req.topic)
