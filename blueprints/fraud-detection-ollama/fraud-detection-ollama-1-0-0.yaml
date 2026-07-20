@@ -154,12 +154,17 @@ spec:
         enabled: false
       flower:
         enabled: false
+      # NOTE: the SUSE Application Collection apache-airflow image is hardened and ships
+      # WITHOUT pip, so `_PIP_ADDITIONAL_REQUIREMENTS` (used below to add the DAG's Python
+      # libraries) cannot run on it. We therefore use the upstream Apache Airflow image,
+      # which includes pip + git. This single component deviates from the SUSE App
+      # Collection for that reason (see README). For production, bake a custom image.
       images:
         airflow:
-          repository: containers/apache-airflow
-          tag: 3.2.2-8.14
+          repository: apache/airflow
+          tag: "3.2.2"
           pullPolicy: IfNotPresent
-          registry: dp.apps.rancher.io
+          registry: docker.io
       dags:
         gitSync:
           enabled: true

@@ -53,3 +53,7 @@ AIWorkload in AI Factory (real GPU node; model downloads on first start) → run
 - The `model` in each request equals the served `modelURL` (`Qwen/Qwen2.5-3B-Instruct`).
 - Verify the `containers/vllm-openai` image tag against the SUSE Application Collection for
   your environment.
+- **Airflow image**: like the Ollama variant, this uses the **upstream `apache/airflow:3.2.2`**
+  image (not the SUSE App Collection one) because the hardened SUSE image ships without `pip`,
+  which `_PIP_ADDITIONAL_REQUIREMENTS` needs. For production, bake a custom Airflow image with
+  the DAG deps and drop `_PIP_ADDITIONAL_REQUIREMENTS`.

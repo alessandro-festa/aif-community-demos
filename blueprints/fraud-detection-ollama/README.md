@@ -53,9 +53,16 @@ port-forwards for you → investigate flagged accounts.
 
 - **Scale**: `SCALE_FACTOR` (Airflow `env` on the blueprint) controls dataset size. The demo
   default is tiny; raising it (and Airflow resources) is exactly why the pipeline is on Airflow.
+- **Airflow image**: this blueprint uses the **upstream `apache/airflow:3.2.2`** image rather
+  than the SUSE Application Collection one. The hardened SUSE image ships **without `pip`**, so
+  `_PIP_ADDITIONAL_REQUIREMENTS` (how we add the DAG's Python libraries) can't run on it —
+  the upstream image includes `pip` + `git`. This one component therefore deviates from the
+  all-SUSE story.
 - **DAG dependencies** are installed at Airflow start via `_PIP_ADDITIONAL_REQUIREMENTS`
   (pandas, networkx, scikit-learn, xgboost, imbalanced-learn, psycopg2-binary, gen-fraud-graph).
-  This is demo-grade; for production bake them into a custom Airflow image.
+  This is demo-grade — the packages install on every pod start, so the first boot takes a few
+  minutes. For production, **bake a custom Airflow image** (FROM apache/airflow:3.2.2 + `pip
+  install …`) and point `images.airflow` at it, dropping `_PIP_ADDITIONAL_REQUIREMENTS`.
 - **Data stores**: transactions/labels/scores in PostgreSQL (`fraud-db`), anomaly vectors in
   Milvus. No graph database is required (ring detection runs in-DAG with networkx).
 - The XGBoost model is trained + used for batch scoring inside Airflow (results in Postgres);
