@@ -176,10 +176,14 @@ function renderGuide() {
     </div>
     <div id="processes" class="section"></div>
     <div class="step-nav">
-      <button id="prev" ${state.step === 0 ? "disabled" : ""}>← Back</button>
+      <div class="row">
+        <button id="prev" ${state.step === 0 ? "disabled" : ""}>← Back</button>
+        <button id="cancel">Cancel</button>
+      </div>
       <button class="primary" id="next" ${state.step >= steps.length - 1 ? "disabled" : ""}>Next →</button>
     </div>`;
   document.getElementById("back").addEventListener("click", () => setView("detail"));
+  document.getElementById("cancel").addEventListener("click", () => setView("catalog"));
   document.getElementById("prev").addEventListener("click", () => { if (state.step > 0) { state.step--; render(); } });
   document.getElementById("next").addEventListener("click", () => { if (state.step < steps.length - 1) { state.step++; render(); } });
   renderAction(step);
@@ -255,8 +259,10 @@ async function refreshProcesses() {
   if (!host) return;
   let procs = [];
   try { procs = await getJSON("/api/processes"); } catch { return; }
+  // Only show the process(es) for the blueprint currently being viewed.
+  if (state.bp) procs = procs.filter((p) => p.blueprint === state.bp.id);
   if (!procs.length) { host.innerHTML = ""; return; }
-  host.innerHTML = `<div class="card"><h3>Running processes</h3>${procs.map((p) =>
+  host.innerHTML = `<div class="card"><h3>Running frontend</h3>${procs.map((p) =>
     `<div class="check"><span class="badge ok">running</span><span>${esc(p.blueprint)}</span>
       <span class="muted">${esc(p.namespace || "")}</span>
       ${p.url ? `<a href="${esc(p.url)}" target="_blank" style="margin-left:auto">${esc(p.url)}</a>` : `<span style="margin-left:auto"></span>`}
