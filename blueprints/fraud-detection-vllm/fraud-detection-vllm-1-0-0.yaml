@@ -15,7 +15,7 @@ metadata:
 #   * SantanderAI/gen-fraud-graph  (Apache-2.0):  https://github.com/SantanderAI/gen-fraud-graph
 #   * srinivas-gajulaa/genai-fraud-detection — the ML-score + LLM-analyst pattern.
 spec:
-  source: SUSE
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
   displayName: Fraud / AML Detection (vLLM, GPU)
   version: 1.0.0
   description: |-

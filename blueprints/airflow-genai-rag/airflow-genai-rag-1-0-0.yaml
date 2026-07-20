@@ -22,7 +22,7 @@ metadata:
 # the DAGs talk to Ollama and Milvus over HTTP (requests only) so the stock Airflow
 # image needs no extra Python packages.
 spec:
-  source: SUSE
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
   displayName: Airflow GenAI RAG (Ollama)
   version: 1.0.0
   description: |

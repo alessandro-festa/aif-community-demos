@@ -84,6 +84,18 @@ nav.tabs button {
 }
 nav.tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
 
+/* Persistent unsupported/demo disclaimer — shown on every page. */
+.banner-warn {
+  background: rgba(255, 193, 7, .12);
+  border-bottom: 1px solid var(--warning);
+  color: var(--text);
+  font-size: .82rem;
+  line-height: 1.4;
+  padding: 9px 22px;
+  text-align: center;
+}
+.banner-warn strong { color: var(--warning); }
+
 main { max-width: 1080px; margin: 0 auto; padding: 22px; }
 
 /* Buttons */

@@ -18,7 +18,7 @@ metadata:
 # No nvcr.io, no NGC token, no nvidia-blueprints repo, no nim-operator, and no
 # ghcr.io UI image/chart.
 spec:
-  source: SUSE
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
   displayName: SUSE VSC (Video Search and Summarization)
   version: 1.0.0
   description: |

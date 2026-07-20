@@ -13,7 +13,7 @@ metadata:
 # Requires a real NVIDIA GPU node (and the GPU Operator). Same model as the
 # visiongpt-ollama variant (which runs the same model on CPU via Ollama).
 spec:
-  source: SUSE
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
   displayName: VisionGPT (vLLM, GPU)
   version: 1.0.0
   description: |-

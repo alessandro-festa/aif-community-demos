@@ -17,7 +17,7 @@ metadata:
 #     this blueprint builds on:  https://github.com/SantanderAI/gen-fraud-graph
 #   * srinivas-gajulaa/genai-fraud-detection — the ML-score + LLM-analyst pattern.
 spec:
-  source: SUSE
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
   displayName: Fraud / AML Detection (Ollama, CPU)
   version: 1.0.0
   description: |

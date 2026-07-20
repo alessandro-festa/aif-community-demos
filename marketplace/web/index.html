@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>SUSE AI Factory — Blueprint Marketplace</title>
+  <title>SUSE AI Factory Community Blueprints</title>
   <link rel="stylesheet" href="/marketplace.css" />
 </head>
 <body>
   <header>
     <span class="brand">SUSE</span>
-    <h1>Blueprint Marketplace</h1>
+    <h1>SUSE AI Factory Community Blueprints</h1>
     <nav class="tabs" id="tabs">
       <button data-view="catalog" class="active">Catalog</button>
       <button data-view="running">Running</button>
@@ -23,6 +23,13 @@
     </span>
     <button class="link" id="theme-toggle" title="Toggle theme">☾</button>
   </header>
+
+  <div class="banner-warn" id="disclaimer">
+    ⚠️ These blueprints are <strong>totally unsupported</strong> and should be used for
+    <strong>demo purposes only</strong>. The components are for the most part from the
+    <strong>SUSE Application Collection</strong> or <strong>SUSE Registry</strong> — but some
+    are not (for example, the frontend UIs).
+  </div>
 
   <main id="app"><!-- rendered by app.js --></main>
 
