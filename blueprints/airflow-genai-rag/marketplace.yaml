@@ -26,6 +26,10 @@ localFrontend:
   portForwards:
     - {name: ollama, service: ollama, local: 11434, remote: 11434}
     - {name: milvus, service: milvus, local: 19530, remote: 19530}
+# In-cluster component UIs the marketplace can port-forward on demand (button
+# enabled only once the service is Ready).
+componentUIs:
+  - {name: airflow, label: "Airflow UI", service: apache-airflow-api-server, port: 8080, path: /}
 guide:
   - title: Import the blueprint
     body: |
@@ -44,10 +48,11 @@ guide:
     action: {type: namespace-input}
   - title: Run the pipeline in Airflow
     body: |
-      Open the Airflow UI (the `airflow-genai` ingress host) and trigger the
-      **`ingest_knowledge_base`** DAG, then **`customize_model`**. The first embeds the
-      knowledge base into Milvus; the second builds the customized `astra-custom` model
-      on Ollama.
+      Use the **Open Airflow UI** button below (enabled once Airflow is Ready) to reach the
+      Airflow web UI. Then trigger these DAGs **in order**, waiting for each to finish:
+
+      1. `ingest_knowledge_base` — embeds the knowledge base into Milvus.
+      2. `customize_model` — builds the customized `astra-custom` model on Ollama.
   - title: Launch the demo UI
     body: |
       Starts `kubectl port-forward` to Ollama (11434) and Milvus (19530) and runs the

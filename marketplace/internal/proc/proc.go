@@ -94,16 +94,107 @@ type Session struct {
 // Hub exposes the session's log hub.
 func (s *Session) Hub() *LogHub { return s.hub }
 
+// PortFwd is a standalone supervised kubectl port-forward to an in-cluster
+// component UI (e.g. the Airflow web UI), independent of a blueprint's local
+// frontend session.
+type PortFwd struct {
+	Blueprint string    `json:"blueprint"`
+	Name      string    `json:"name"`
+	Namespace string    `json:"namespace"`
+	URL       string    `json:"url"`
+	Running   bool      `json:"running"`
+	StartedAt time.Time `json:"startedAt"`
+
+	cancel context.CancelFunc
+}
+
+// ProcInfo is the unified view of a running thing (frontend or component-UI
+// port-forward) for the "Running" overview.
+type ProcInfo struct {
+	Blueprint string    `json:"blueprint"`
+	Name      string    `json:"name"`
+	Kind      string    `json:"kind"` // "frontend" | "component-ui"
+	Namespace string    `json:"namespace"`
+	URL       string    `json:"url"`
+	Running   bool      `json:"running"`
+	StartedAt time.Time `json:"startedAt"`
+}
+
 // Manager owns all sessions.
 type Manager struct {
 	cacheDir string
 	mu       sync.Mutex
 	sessions map[string]*Session
+	pfs      map[string]*PortFwd // key: "<blueprint>/<name>"
 }
 
 // New returns a Manager storing venvs under cacheDir/venvs.
 func New(cacheDir string) *Manager {
-	return &Manager{cacheDir: cacheDir, sessions: make(map[string]*Session)}
+	return &Manager{
+		cacheDir: cacheDir,
+		sessions: make(map[string]*Session),
+		pfs:      make(map[string]*PortFwd),
+	}
+}
+
+func pfKey(blueprint, name string) string { return blueprint + "/" + name }
+
+// StartPortFwd (re)starts a supervised port-forward to a component service and
+// returns once the local port is listening (or times out). Kept alive until
+// StopPortFwd / shutdown.
+func (m *Manager) StartPortFwd(blueprint, kubeCtx, namespace, path string, pf catalog.PortForward) (*PortFwd, error) {
+	if kubeCtx == "" {
+		return nil, fmt.Errorf("no target cluster selected")
+	}
+	if namespace == "" {
+		return nil, fmt.Errorf("namespace is required")
+	}
+	m.StopPortFwd(blueprint, pf.Name)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	hub := newLogHub() // internal only
+	go supervisePortForward(ctx, hub, kubeCtx, namespace, pf)
+
+	if path == "" {
+		path = "/"
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", pf.Local, path)
+	waitListening(ctx, pf.Local, 30*time.Second) // best effort; button still returns URL
+
+	p := &PortFwd{Blueprint: blueprint, Name: pf.Name, Namespace: namespace,
+		URL: url, Running: true, StartedAt: time.Now(), cancel: cancel}
+	m.mu.Lock()
+	m.pfs[pfKey(blueprint, pf.Name)] = p
+	m.mu.Unlock()
+	return p, nil
+}
+
+// StopPortFwd terminates a component-UI port-forward if running.
+func (m *Manager) StopPortFwd(blueprint, name string) {
+	m.mu.Lock()
+	p := m.pfs[pfKey(blueprint, name)]
+	delete(m.pfs, pfKey(blueprint, name))
+	m.mu.Unlock()
+	if p != nil && p.cancel != nil {
+		p.cancel()
+	}
+}
+
+// Processes returns the unified list of running frontends + component-UI
+// port-forwards.
+func (m *Manager) Processes() []ProcInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]ProcInfo, 0, len(m.sessions)+len(m.pfs))
+	for _, s := range m.sessions {
+		out = append(out, ProcInfo{Blueprint: s.Blueprint, Name: "demo UI", Kind: "frontend",
+			Namespace: s.Namespace, URL: s.URL, Running: s.Running, StartedAt: s.StartedAt})
+	}
+	for _, p := range m.pfs {
+		out = append(out, ProcInfo{Blueprint: p.Blueprint, Name: p.Name, Kind: "component-ui",
+			Namespace: p.Namespace, URL: p.URL, Running: p.Running, StartedAt: p.StartedAt})
+	}
+	return out
 }
 
 // Get returns the current session for a blueprint, if any.
@@ -254,16 +345,26 @@ func (m *Manager) Stop(id string) {
 	sess.mu.Unlock()
 }
 
-// StopAll terminates every session (used on shutdown).
+// StopAll terminates every session + port-forward (used on shutdown).
 func (m *Manager) StopAll() {
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.sessions))
 	for id := range m.sessions {
 		ids = append(ids, id)
 	}
+	pfs := make([]*PortFwd, 0, len(m.pfs))
+	for _, p := range m.pfs {
+		pfs = append(pfs, p)
+	}
+	m.pfs = make(map[string]*PortFwd)
 	m.mu.Unlock()
 	for _, id := range ids {
 		m.Stop(id)
+	}
+	for _, p := range pfs {
+		if p.cancel != nil {
+			p.cancel()
+		}
 	}
 }
 

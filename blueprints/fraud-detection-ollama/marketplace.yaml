@@ -31,6 +31,10 @@ localFrontend:
     - {name: fraud-db, service: fraud-db, local: 5432, remote: 5432}
     - {name: milvus, service: milvus, local: 19530, remote: 19530}
     - {name: ollama, service: ollama, local: 11434, remote: 11434}
+# In-cluster component UIs the marketplace can port-forward on demand (button
+# enabled only once the service is Ready).
+componentUIs:
+  - {name: airflow, label: "Airflow UI", service: apache-airflow-api-server, port: 8080, path: /}
 guide:
   - title: Import the blueprint
     body: |
@@ -47,10 +51,15 @@ guide:
     action: {type: namespace-input}
   - title: Run the pipeline in Airflow
     body: |
-      Open the Airflow UI (the `fraud-airflow` ingress host) and trigger, in order:
-      **`generate_fraud_dataset`** (synthetic graph → Postgres), **`engineer_and_train`**
-      (features → XGBoost → scores + metrics), **`flag_and_anomaly`** (Milvus anomaly index
-      → flagged accounts). Raise `SCALE_FACTOR` on the blueprint for a bigger dataset.
+      Use the **Open Airflow UI** button below (enabled once Airflow is Ready) to reach the
+      Airflow web UI. Then trigger these DAGs **in order**, waiting for each to finish before
+      starting the next:
+
+      1. `generate_fraud_dataset` — synthetic fraud graph → PostgreSQL.
+      2. `engineer_and_train` — features → XGBoost → account scores + model metrics.
+      3. `flag_and_anomaly` — Milvus anomaly index → flagged accounts.
+
+      Raise `SCALE_FACTOR` on the blueprint for a bigger dataset.
   - title: Launch the investigator UI
     body: |
       Starts `kubectl port-forward` to Postgres (5432), Milvus (19530) and Ollama (11434) and

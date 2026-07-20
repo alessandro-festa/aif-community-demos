@@ -177,8 +177,14 @@ pre.log {
 .stepper .step.active { color: var(--on-accent); background: var(--accent); border-color: var(--accent); font-weight: 700; }
 .stepper .step.done { color: var(--mint); border-color: var(--mint); }
 
-.step-body { line-height: 1.6; }
+.step-body { font-size: .9rem; line-height: 1.6; }
+.step-body > div { margin: 3px 0; }
 .step-body code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: .85em; }
+.step-body blockquote { margin: 8px 0; padding-left: 10px; border-left: 3px solid var(--border); }
+/* Ordered / unordered lists in guide bodies — the linear step-by-step. */
+.guide-list { margin: 8px 0; padding-left: 22px; }
+.guide-list li { margin: 5px 0; }
+.guide-list li::marker { color: var(--accent); font-weight: 700; }
 .step-nav { display: flex; justify-content: space-between; margin-top: 20px; }
 
 .spinner {

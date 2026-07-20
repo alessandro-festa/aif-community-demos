@@ -42,6 +42,18 @@ type LocalFrontend struct {
 	PortForwards []PortForward     `yaml:"portForwards" json:"portForwards"`
 }
 
+// ComponentUI is an in-cluster component web UI (e.g. Airflow) the marketplace
+// can port-forward on demand — the button is enabled only once the service is
+// Ready.
+type ComponentUI struct {
+	Name    string `yaml:"name" json:"name"`
+	Label   string `yaml:"label" json:"label"`
+	Service string `yaml:"service" json:"service"`
+	Port    int    `yaml:"port" json:"port"`   // remote service port
+	Local   int    `yaml:"local" json:"local"` // local port (default = Port)
+	Path    string `yaml:"path" json:"path"`   // URL path (default "/")
+}
+
 // Action is the optional operation attached to a guide step.
 type Action struct {
 	// Type is one of: import | namespace-input | start-frontend | stop-frontend | open-url.
@@ -66,6 +78,7 @@ type Blueprint struct {
 	BlueprintFile string         `yaml:"blueprintFile" json:"blueprintFile"`
 	Prerequisites []Prerequisite `yaml:"prerequisites" json:"prerequisites"`
 	LocalFrontend *LocalFrontend `yaml:"localFrontend" json:"localFrontend,omitempty"`
+	ComponentUIs  []ComponentUI  `yaml:"componentUIs" json:"componentUIs,omitempty"`
 	Guide         []GuideStep    `yaml:"guide" json:"guide"`
 
 	// Dir is the absolute path to this blueprint's folder in the checkout

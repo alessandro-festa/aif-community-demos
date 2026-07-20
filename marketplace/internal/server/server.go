@@ -43,6 +43,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/blueprints/{id}/import", s.handleImport)
 	mux.HandleFunc("POST /api/blueprints/{id}/frontend/start", s.handleFrontendStart)
 	mux.HandleFunc("POST /api/blueprints/{id}/frontend/stop", s.handleFrontendStop)
+	mux.HandleFunc("POST /api/blueprints/{id}/service-status", s.handleServiceStatus)
+	mux.HandleFunc("POST /api/blueprints/{id}/component-ui/start", s.handleComponentUIStart)
+	mux.HandleFunc("POST /api/blueprints/{id}/component-ui/stop", s.handleComponentUIStop)
 	mux.HandleFunc("GET /api/processes", s.handleProcesses)
 
 	// Static web UI (index.html fallback for the single page).
@@ -185,7 +188,74 @@ func (s *Server) handleFrontendStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProcesses(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.pm.List())
+	writeJSON(w, s.pm.Processes())
+}
+
+type svcStatusReq struct {
+	Namespace string `json:"namespace"`
+	Service   string `json:"service"`
+}
+
+func (s *Server) handleServiceStatus(w http.ResponseWriter, r *http.Request) {
+	var req svcStatusReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	ready, n := kube.ServiceReady(ctx, s.targetContext(ctx), req.Namespace, req.Service)
+	writeJSON(w, map[string]any{"ready": ready, "endpoints": n})
+}
+
+type componentUIReq struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+}
+
+func (s *Server) handleComponentUIStart(w http.ResponseWriter, r *http.Request) {
+	bp, ok := s.cat.Get(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("blueprint not found"))
+		return
+	}
+	var req componentUIReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var cui *catalog.ComponentUI
+	for i := range bp.ComponentUIs {
+		if bp.ComponentUIs[i].Name == req.Name {
+			cui = &bp.ComponentUIs[i]
+			break
+		}
+	}
+	if cui == nil {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("component UI %q not found", req.Name))
+		return
+	}
+	local := cui.Local
+	if local == 0 {
+		local = cui.Port
+	}
+	pf := catalog.PortForward{Name: cui.Name, Service: cui.Service, Local: local, Remote: cui.Port}
+	p, err := s.pm.StartPortFwd(bp.ID, s.targetContext(r.Context()), req.Namespace, cui.Path, pf)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, map[string]any{"url": p.URL, "name": cui.Name})
+}
+
+func (s *Server) handleComponentUIStop(w http.ResponseWriter, r *http.Request) {
+	var req componentUIReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.pm.StopPortFwd(r.PathValue("id"), req.Name)
+	writeJSON(w, map[string]any{"stopped": req.Name})
 }
 
 // --- helpers ------------------------------------------------------------- //

@@ -101,6 +101,26 @@ func checkOne(ctx context.Context, kubeCtx string, r catalog.Prerequisite) (bool
 	}
 }
 
+// ServiceReady reports whether a Service in a namespace has ready backing
+// endpoints (i.e. the component is up), and how many.
+func ServiceReady(ctx context.Context, kubeCtx, namespace, service string) (bool, int) {
+	if kubeCtx == "" || namespace == "" {
+		return false, 0
+	}
+	out, err := output(ctx, kubeCtx, "kubectl", "-n", namespace, "get", "endpoints", service,
+		"-o", `jsonpath={range .subsets[*]}{range .addresses[*]}{.ip}{"\n"}{end}{end}`)
+	if err != nil {
+		return false, 0
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n > 0, n
+}
+
 // Apply streams `kubectl apply -f file` output line-by-line to emit.
 func Apply(ctx context.Context, kubeCtx, file string, emit func(line string)) error {
 	if kubeCtx == "" {

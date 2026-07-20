@@ -55,15 +55,39 @@ async function streamPost(url, body, { onLog, onDone, onError }) {
 }
 
 // Tiny markdown-ish renderer for guide bodies (safe: escapes first).
+// Supports **bold**, `code`, > blockquotes, ordered lists (1. / 2.) and
+// unordered lists (- / *), so guide steps can read as a linear step-by-step.
 function md(text) {
-  let h = esc(text);
-  h = h.replace(/`([^`]+)`/g, "<code>$1</code>");
-  h = h.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  const lines = h.split("\n").map((l) => {
-    if (l.trim().startsWith("&gt; ")) return `<blockquote class="muted">${l.trim().slice(5)}</blockquote>`;
-    return l;
-  });
-  return lines.join("<br>");
+  const inline = (s) => esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  const lines = String(text).split("\n");
+  const out = [];
+  let list = null; // "ol" | "ul" | null
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  for (const raw of lines) {
+    const l = raw.trim();
+    const ol = l.match(/^\d+\.\s+(.*)$/);
+    const ul = l.match(/^[-*]\s+(.*)$/);
+    if (ol) {
+      if (list !== "ol") { closeList(); out.push('<ol class="guide-list">'); list = "ol"; }
+      out.push(`<li>${inline(ol[1])}</li>`);
+    } else if (ul) {
+      if (list !== "ul") { closeList(); out.push('<ul class="guide-list">'); list = "ul"; }
+      out.push(`<li>${inline(ul[1])}</li>`);
+    } else if (l.startsWith("> ")) {
+      closeList();
+      out.push(`<blockquote class="muted">${inline(l.slice(2))}</blockquote>`);
+    } else if (l === "") {
+      closeList();
+      out.push("<br>");
+    } else {
+      closeList();
+      out.push(`<div>${inline(l)}</div>`);
+    }
+  }
+  closeList();
+  return out.join("");
 }
 
 // --- data loading --------------------------------------------------------- //
@@ -118,31 +142,45 @@ async function renderRunning() {
   await refreshRunningList();
 }
 
+async function stopProc(p) {
+  if (p.kind === "component-ui") {
+    await fetch(`/api/blueprints/${p.blueprint}/component-ui/stop`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: p.name }),
+    });
+  } else {
+    await fetch(`/api/blueprints/${p.blueprint}/frontend/stop`, { method: "POST" });
+  }
+}
+
+function procRowHTML(p, i) {
+  return `<div class="check">
+    <span class="badge ok">${esc(p.kind === "component-ui" ? "port-forward" : "running")}</span>
+    <span><strong>${esc(bpName(p.blueprint))}</strong> <span class="muted">· ${esc(p.name)}</span></span>
+    <span class="muted">${esc(p.namespace || "")}</span>
+    ${p.url ? `<a href="${esc(p.url)}" target="_blank" style="margin-left:auto">${esc(p.url)}</a>` : `<span style="margin-left:auto"></span>`}
+    <button class="danger" data-stop="${i}" style="max-width:90px">Stop</button>
+  </div>`;
+}
+
 async function refreshRunningList() {
   const host = document.getElementById("running-list");
   if (!host) return;
   let procs = [];
   try { procs = await getJSON("/api/processes"); }
   catch (e) { host.innerHTML = `<div class="error">${esc(String(e))}</div>`; return; }
-  if (!procs.length) { host.innerHTML = `<p class="muted">No frontends are running.</p>`; return; }
+  if (!procs.length) { host.innerHTML = `<p class="muted">Nothing is running.</p>`; return; }
   host.innerHTML = `
     <div class="row" style="justify-content:flex-end;margin-bottom:10px"><button class="danger" id="stop-all" style="max-width:120px">Stop all</button></div>
-    <div class="card">${procs.map((p) => `
-      <div class="check">
-        <span class="badge ok">running</span>
-        <span><strong>${esc(bpName(p.blueprint))}</strong></span>
-        <span class="muted">${esc(p.namespace || "")}</span>
-        ${p.url ? `<a href="${esc(p.url)}" target="_blank" style="margin-left:auto">${esc(p.url)}</a>` : `<span style="margin-left:auto"></span>`}
-        <button class="danger" data-stop="${esc(p.blueprint)}" style="max-width:90px">Stop</button>
-      </div>`).join("")}</div>`;
+    <div class="card">${procs.map((p, i) => procRowHTML(p, i)).join("")}</div>`;
   host.querySelectorAll("button[data-stop]").forEach((b) => b.addEventListener("click", async () => {
     b.disabled = true; b.textContent = "…";
-    await fetch(`/api/blueprints/${b.dataset.stop}/frontend/stop`, { method: "POST" });
+    await stopProc(procs[+b.dataset.stop]);
     await refreshRunningList(); updateRunningIndicator();
   }));
   document.getElementById("stop-all")?.addEventListener("click", async (e) => {
     e.target.disabled = true;
-    for (const p of procs) await fetch(`/api/blueprints/${p.blueprint}/frontend/stop`, { method: "POST" });
+    for (const p of procs) await stopProc(p);
     await refreshRunningList(); updateRunningIndicator();
   });
 }
@@ -232,6 +270,7 @@ function renderGuide() {
       <div id="action"></div>
       <pre class="log" id="log" hidden></pre>
     </div>
+    <div id="component-uis" class="section"></div>
     <div id="processes" class="section"></div>
     <div class="step-nav">
       <div class="row">
@@ -245,7 +284,72 @@ function renderGuide() {
   document.getElementById("prev").addEventListener("click", () => { if (state.step > 0) { state.step--; render(); } });
   document.getElementById("next").addEventListener("click", () => { if (state.step < steps.length - 1) { state.step++; render(); } });
   renderAction(step);
+  renderComponentUIs();
   refreshProcesses();
+}
+
+// Component UIs (e.g. Airflow) — a port-forward button per declared component,
+// enabled only once the component's service is Ready (polled with a spinner).
+function renderComponentUIs() {
+  const host = document.getElementById("component-uis");
+  const bp = state.bp;
+  const uis = (bp && bp.componentUIs) || [];
+  if (!uis.length) { if (host) host.innerHTML = ""; return; }
+  if (!state.namespace) {
+    host.innerHTML = `<div class="card"><h3>Component access</h3>
+      <div class="muted">Set the AIWorkload namespace above to enable component UI access.</div></div>`;
+    return;
+  }
+  host.innerHTML = `<div class="card"><h3>Component access</h3>${uis.map((u) => `
+    <div class="check" data-cui="${esc(u.name)}">
+      <span class="dot" data-dot></span>
+      <span><strong>${esc(u.label || u.name)}</strong></span>
+      <span class="muted" data-status style="margin-left:auto">checking…</span>
+      <button data-open disabled style="max-width:120px">Open</button>
+    </div>`).join("")}</div>`;
+  uis.forEach((u) => wireComponentUI(u));
+}
+
+async function wireComponentUI(u) {
+  const row = document.querySelector(`#component-uis [data-cui="${CSS.escape(u.name)}"]`);
+  if (!row) return;
+  const dot = row.querySelector("[data-dot]");
+  const status = row.querySelector("[data-status]");
+  const btn = row.querySelector("[data-open]");
+
+  async function poll() {
+    if (!document.body.contains(row)) return; // view changed; stop polling
+    try {
+      const r = await getJSON(`/api/blueprints/${state.bp.id}/service-status`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ namespace: state.namespace, service: u.service }),
+      });
+      if (r.ready) {
+        dot.className = "dot ok"; status.textContent = "ready"; btn.disabled = false;
+      } else {
+        dot.className = "dot bad";
+        status.innerHTML = '<span class="spinner"></span>waiting…';
+        btn.disabled = true;
+        setTimeout(poll, 5000);
+      }
+    } catch {
+      dot.className = "dot bad"; status.textContent = "unavailable"; btn.disabled = true;
+      setTimeout(poll, 8000);
+    }
+  }
+  btn.addEventListener("click", async () => {
+    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+    try {
+      const r = await getJSON(`/api/blueprints/${state.bp.id}/component-ui/start`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ namespace: state.namespace, name: u.name }),
+      });
+      window.open(r.url, "_blank");
+      btn.textContent = "Open"; btn.disabled = false;
+      refreshProcesses();
+    } catch (e) { status.textContent = String(e); btn.textContent = "Open"; btn.disabled = false; }
+  });
+  poll();
 }
 
 function logLine(s) {
@@ -320,13 +424,9 @@ async function refreshProcesses() {
   // Only show the process(es) for the blueprint currently being viewed.
   if (state.bp) procs = procs.filter((p) => p.blueprint === state.bp.id);
   if (!procs.length) { host.innerHTML = ""; return; }
-  host.innerHTML = `<div class="card"><h3>Running frontend</h3>${procs.map((p) =>
-    `<div class="check"><span class="badge ok">running</span><span>${esc(p.blueprint)}</span>
-      <span class="muted">${esc(p.namespace || "")}</span>
-      ${p.url ? `<a href="${esc(p.url)}" target="_blank" style="margin-left:auto">${esc(p.url)}</a>` : `<span style="margin-left:auto"></span>`}
-      <button class="danger" data-stop="${esc(p.blueprint)}" style="max-width:90px">Stop</button></div>`).join("")}</div>`;
+  host.innerHTML = `<div class="card"><h3>Running</h3>${procs.map((p, i) => procRowHTML(p, i)).join("")}</div>`;
   host.querySelectorAll("button[data-stop]").forEach((b) =>
-    b.addEventListener("click", async () => { await fetch(`/api/blueprints/${b.dataset.stop}/frontend/stop`, { method: "POST" }); refreshProcesses(); }));
+    b.addEventListener("click", async () => { await stopProc(procs[+b.dataset.stop]); refreshProcesses(); }));
 }
 
 function renderSettings() {
