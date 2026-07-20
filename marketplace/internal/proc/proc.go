@@ -14,10 +14,26 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/suse/blueprint-marketplace/internal/catalog"
 )
+
+// groupKill makes a command run in its own process group and, when its context
+// is cancelled, SIGKILL the whole group. This is essential because `kubectl` is
+// often the `kuberlr` wrapper, which forks the real kubectl as a child —
+// cancelling the context would otherwise kill only the wrapper and orphan the
+// port-forward.
+func groupKill(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+}
 
 // LogHub is a small ring buffer with fan-out to live subscribers.
 type LogHub struct {
@@ -199,6 +215,7 @@ func (m *Manager) StartFrontend(bp catalog.Blueprint, kubeCtx, namespace string,
 	ucmd := exec.CommandContext(ctx, uvicorn, entry, "--host", "127.0.0.1", "--port", fmt.Sprint(port))
 	ucmd.Dir = frontendDir
 	ucmd.Env = env
+	groupKill(ucmd)
 	pipeToHub(ucmd, hub, "[uvicorn] ")
 	if err := ucmd.Start(); err != nil {
 		cancel()
@@ -282,6 +299,7 @@ func supervisePortForward(ctx context.Context, hub *LogHub, kubeCtx, namespace s
 	for ctx.Err() == nil {
 		cmd := exec.CommandContext(ctx, "kubectl", "--context", kubeCtx, "-n", namespace,
 			"port-forward", "svc/"+pf.Service, spec)
+		groupKill(cmd)
 		pipeToHub(cmd, hub, "["+pf.Name+"] ")
 		if err := cmd.Start(); err != nil {
 			hub.Emit(fmt.Sprintf("[%s] failed to start port-forward: %v", pf.Name, err))

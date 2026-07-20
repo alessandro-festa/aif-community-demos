@@ -99,9 +99,67 @@ function setView(v) {
 function render() {
   renderClusterChip();
   if (state.view === "settings") return renderSettings();
+  if (state.view === "running") return renderRunning();
   if (state.view === "detail") return renderDetail();
   if (state.view === "guide") return renderGuide();
   return renderCatalog();
+}
+
+// --- running frontends overview ------------------------------------------ //
+function bpName(id) {
+  const bp = state.catalog.find((b) => b.id === id);
+  return bp ? bp.displayName : id;
+}
+
+async function renderRunning() {
+  app.innerHTML = `<h2>Running frontends</h2>
+    <p class="muted">Local demo UIs started from the guided demos (uvicorn + kubectl port-forwards).</p>
+    <div id="running-list"><span class="spinner"></span>Loading…</div>`;
+  await refreshRunningList();
+}
+
+async function refreshRunningList() {
+  const host = document.getElementById("running-list");
+  if (!host) return;
+  let procs = [];
+  try { procs = await getJSON("/api/processes"); }
+  catch (e) { host.innerHTML = `<div class="error">${esc(String(e))}</div>`; return; }
+  if (!procs.length) { host.innerHTML = `<p class="muted">No frontends are running.</p>`; return; }
+  host.innerHTML = `
+    <div class="row" style="justify-content:flex-end;margin-bottom:10px"><button class="danger" id="stop-all" style="max-width:120px">Stop all</button></div>
+    <div class="card">${procs.map((p) => `
+      <div class="check">
+        <span class="badge ok">running</span>
+        <span><strong>${esc(bpName(p.blueprint))}</strong></span>
+        <span class="muted">${esc(p.namespace || "")}</span>
+        ${p.url ? `<a href="${esc(p.url)}" target="_blank" style="margin-left:auto">${esc(p.url)}</a>` : `<span style="margin-left:auto"></span>`}
+        <button class="danger" data-stop="${esc(p.blueprint)}" style="max-width:90px">Stop</button>
+      </div>`).join("")}</div>`;
+  host.querySelectorAll("button[data-stop]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true; b.textContent = "…";
+    await fetch(`/api/blueprints/${b.dataset.stop}/frontend/stop`, { method: "POST" });
+    await refreshRunningList(); updateRunningIndicator();
+  }));
+  document.getElementById("stop-all")?.addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    for (const p of procs) await fetch(`/api/blueprints/${p.blueprint}/frontend/stop`, { method: "POST" });
+    await refreshRunningList(); updateRunningIndicator();
+  });
+}
+
+// Poll the process list to keep the header indicator + tab count fresh.
+async function updateRunningIndicator() {
+  let procs = [];
+  try { procs = await getJSON("/api/processes"); } catch { return; }
+  const n = procs.length;
+  const badge = document.getElementById("running-badge");
+  if (badge) {
+    badge.hidden = n === 0;
+    badge.textContent = n ? `▶ ${n} running` : "";
+  }
+  const tab = document.querySelector('#tabs button[data-view="running"]');
+  if (tab) tab.textContent = n ? `Running (${n})` : "Running";
+  if (state.view === "running") refreshRunningList();
 }
 
 function renderCatalog() {
@@ -308,6 +366,7 @@ function renderSettings() {
 
 // --- boot ----------------------------------------------------------------- //
 document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
+document.getElementById("running-badge").addEventListener("click", () => setView("running"));
 
 const themeBtn = document.getElementById("theme-toggle");
 function applyTheme(t) { document.documentElement.dataset.theme = t; themeBtn.textContent = t === "dark" ? "☾" : "☀"; localStorage.setItem("bpm-theme", t); }
@@ -318,4 +377,6 @@ applyTheme(localStorage.getItem("bpm-theme") || "dark");
   await Promise.all([loadSettings(), loadContexts()]);
   await loadCatalog();
   render();
+  updateRunningIndicator();
+  setInterval(updateRunningIndicator, 4000);
 })();
