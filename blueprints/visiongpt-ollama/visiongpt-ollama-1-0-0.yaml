@@ -1,0 +1,69 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: visiongpt-ollama
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: visiongpt-ollama-1-0-0
+# VisionGPT (Ollama) — LLM-assisted navigation hazard detection on CPU.
+# A SUSE derivation of AIS-Clemson/VisionGPT, reimagined as a vision-language
+# pipeline: a local demo UI samples frames from a walking video and sends each to
+# a vision-language model (Ollama, qwen2.5vl:3b) over the OpenAI-compatible API,
+# which returns a per-frame danger score + short reason. CPU-only — same model
+# family as the visiongpt-vllm variant (which serves Qwen2.5-VL via vLLM on GPU).
+# This CR deploys only Ollama; the UI runs locally via the Blueprint Marketplace.
+spec:
+  source: SUSE
+  displayName: VisionGPT (Ollama, CPU)
+  version: 1.0.0
+  description: |
+    LLM-assisted navigation hazard detection — a SUSE / vision-language derivation
+    of AIS-Clemson's VisionGPT. Ollama serves the Qwen2.5-VL 3B vision-language
+    model on CPU; a local SUSE-styled UI samples frames from a walking video
+    (bundled sample or your upload) and asks the model, per frame, for a danger
+    score (0/1) and a short reason, at a selectable sensitivity (low/normal/high).
+
+    Deploys only Ollama (CPU). The UI runs locally via the Blueprint Marketplace,
+    reaching Ollama over kubectl port-forward. For a GPU-served version of the same
+    model via vLLM, use the "VisionGPT (vLLM, GPU)" blueprint.
+
+    Prerequisites: the SUSE AI Factory operator, the application-collection
+    ClusterRepo (+ credentials secret), a default StorageClass. After importing,
+    create an AIWorkload from this Blueprint in the AI Factory UI, then launch the
+    local UI from the marketplace guide.
+  components:
+  - chartName: ollama
+    chartRepo: application-collection
+    chartVersion: 1.55.0
+    values:
+      # Pin the service name so the local UI's port-forward is stable.
+      fullnameOverride: ollama
+      image:
+        pullPolicy: IfNotPresent
+        registry: dp.apps.rancher.io
+        repository: containers/ollama
+        tag: 0.21.2-11.48
+      ollama:
+        gpu:
+          enabled: false
+          draEnabled: false
+        models:
+          # Qwen2.5-VL 3B — multimodal (vision+text), the CPU counterpart of the
+          # vLLM variant's Qwen/Qwen2.5-VL-3B-Instruct.
+          pull:
+          - qwen2.5vl:3b
+          run:
+          - qwen2.5vl:3b
+        port: 11434
+      persistentVolume:
+        enabled: true
+        accessModes:
+        - ReadWriteOnce
+        size: 20Gi
+      resources:
+        limits: {}
+        requests: {}
+      runtimeClassName: ""
+      service:
+        port: 11434
+        type: ClusterIP

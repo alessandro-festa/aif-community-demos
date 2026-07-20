@@ -1,0 +1,54 @@
+id: visiongpt-ollama
+displayName: VisionGPT (Ollama, CPU)
+description: >-
+  LLM-assisted navigation hazard detection — a SUSE / vision-language derivation of
+  AIS-Clemson's VisionGPT. Ollama serves Qwen2.5-VL (3B) on CPU; a local UI samples
+  frames from a walking video and returns a per-frame danger score + short reason at
+  a selectable sensitivity.
+category: ai-blueprints
+tags: [visiongpt, ollama, qwen2.5-vl, vision, cpu]
+blueprintFile: visiongpt-ollama-1-0-0.yaml
+prerequisites:
+  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
+  - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
+  - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
+localFrontend:
+  dir: ui
+  runtime: python
+  install:
+    - "-r ui/requirements.txt"
+  entry: app.main:app
+  port: 8000
+  openPath: /
+  env:
+    OPENAI_BASE_URL: "http://localhost:11434/v1"
+    VLM_MODEL: "qwen2.5vl:3b"
+    OPENAI_API_KEY: "EMPTY"
+    SENSITIVITY: "normal"
+  portForwards:
+    - {name: ollama, service: ollama, local: 11434, remote: 11434}
+guide:
+  - title: Import the blueprint
+    body: |
+      Applies the VisionGPT (Ollama) Blueprint CR to the selected cluster. This adds
+      it to the SUSE AI Factory catalog — it does not deploy anything yet.
+    action: {type: import}
+  - title: Create the AIWorkload (SUSE AI Factory UI)
+    body: |
+      In the SUSE AI Factory UI, go to **Blueprints → VisionGPT (Ollama, CPU) →
+      Create AIWorkload**, choose a target **namespace**, and deploy. Wait for the
+      Ollama pod to be Ready (it pulls `qwen2.5vl:3b` on first start — a few GB).
+      Enter the namespace you chose below.
+    action: {type: namespace-input}
+  - title: Launch the demo UI
+    body: |
+      Starts `kubectl port-forward` to Ollama (11434) and runs the VisionGPT UI
+      locally.
+    action: {type: start-frontend}
+  - title: Analyse a walk
+    body: |
+      Open the UI, pick the bundled **walk.mp4** (or upload your own walking video),
+      choose a sensitivity, and hit **Analyse**. Each sampled frame gets a danger
+      score + short reason. Note: on CPU, per-frame inference is slow — expect a few
+      seconds per frame.
+    action: {type: open-url, url: "http://localhost:8000"}

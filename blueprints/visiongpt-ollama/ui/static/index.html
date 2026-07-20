@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VisionGPT — Navigation Hazard Detection</title>
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/suse.css" />
+</head>
+<body>
+  <header>
+    <img src="/favicon.svg" alt="SUSE" />
+    <h1>VisionGPT — Navigation Hazard Detection</h1>
+    <span class="tag" id="tag">local VLM · SUSE</span>
+  </header>
+
+  <main>
+    <!-- Controls -->
+    <section class="card">
+      <h2>Analyse a walk</h2>
+
+      <label>Sample video</label>
+      <select id="sample"></select>
+
+      <label>…or upload your own</label>
+      <input id="file" type="file" accept="video/*" />
+
+      <label>Sensitivity</label>
+      <select id="sensitivity">
+        <option value="low">Low — imminent threats only</option>
+        <option value="normal" selected>Normal — potential hazards</option>
+        <option value="high">High — anything risky</option>
+      </select>
+
+      <button class="primary" id="run">Analyse</button>
+      <button id="stop" class="stop" hidden>Stop</button>
+      <div id="error" class="error"></div>
+      <div id="health" class="muted" style="margin-top:12px;"></div>
+    </section>
+
+    <!-- Results -->
+    <section>
+      <div class="card section">
+        <h2>Summary</h2>
+        <div id="summary" class="muted">Run an analysis to see per-frame hazard results.</div>
+      </div>
+      <div class="card section">
+        <h2>Timeline</h2>
+        <div class="frames" id="frames"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
