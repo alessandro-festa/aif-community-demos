@@ -85,15 +85,17 @@ def generate_fraud_dataset():
                        ["account_id", "customer_name", "balance", "risk_score", "creation_date"],
                        list(acc.itertuples(index=False, name=None)))
 
-        # Normal transactions.
+        # Normal transactions. Note: the rows carry an extra is_fraud_edge value,
+        # so the INSERT column list must include it too.
         tx_cols = ["tx_id", "src_id", "dst_id", "amount", "timestamp", "description"]
+        tx_insert_cols = tx_cols + ["is_fraud_edge"]
         tx = read_many("transactions/*.csv", tx_cols)
-        pg_insert_rows("transactions", tx_cols,
+        pg_insert_rows("transactions", tx_insert_cols,
                        [(*r, 0) for r in tx.itertuples(index=False, name=None)])
 
         # Fraud (labelled) transaction edges.
         ftx = read_many("fraud/transactions_fraud.csv", tx_cols)
-        pg_insert_rows("transactions", tx_cols,
+        pg_insert_rows("transactions", tx_insert_cols,
                        [(*r, 1) for r in ftx.itertuples(index=False, name=None)])
 
         # Ground-truth fraud cases (laundering rings).
