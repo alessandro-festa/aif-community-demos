@@ -139,17 +139,16 @@ spec:
         enabled: false
       flower:
         enabled: false
-      # NOTE: the SUSE Application Collection apache-airflow image is hardened and ships
-      # WITHOUT pip, so `_PIP_ADDITIONAL_REQUIREMENTS` (used below to add the DAG's Python
-      # libraries) cannot run on it. We therefore use the upstream Apache Airflow image,
-      # which includes pip + git. This single component deviates from the SUSE App
-      # Collection for that reason (see README). For production, bake a custom image.
+      # Custom Airflow image: built FROM the SUSE Application Collection apache-airflow
+      # base (which ships without pip) with the DAG's Python libraries baked in. See the
+      # ollama variant / blueprints/fraud-detection-vllm/airflow-image/Dockerfile. This
+      # replaces the too-slow-to-converge _PIP_ADDITIONAL_REQUIREMENTS approach.
       images:
         airflow:
-          repository: apache/airflow
-          tag: "3.2.2"
+          repository: alessandro-festa/fraud-airflow
+          tag: "1.0.0"
           pullPolicy: IfNotPresent
-          registry: docker.io
+          registry: ghcr.io
       dags:
         gitSync:
           enabled: true
@@ -167,8 +166,6 @@ spec:
         value: http://milvus:19530
       - name: SCALE_FACTOR
         value: "0.001"
-      - name: _PIP_ADDITIONAL_REQUIREMENTS
-        value: "pandas numpy networkx scikit-learn xgboost imbalanced-learn psycopg2-binary requests git+https://github.com/SantanderAI/gen-fraud-graph.git"
       ingress:
         apiServer:
           enabled: true

@@ -53,16 +53,20 @@ port-forwards for you → investigate flagged accounts.
 
 - **Scale**: `SCALE_FACTOR` (Airflow `env` on the blueprint) controls dataset size. The demo
   default is tiny; raising it (and Airflow resources) is exactly why the pipeline is on Airflow.
-- **Airflow image**: this blueprint uses the **upstream `apache/airflow:3.2.2`** image rather
-  than the SUSE Application Collection one. The hardened SUSE image ships **without `pip`**, so
-  `_PIP_ADDITIONAL_REQUIREMENTS` (how we add the DAG's Python libraries) can't run on it —
-  the upstream image includes `pip` + `git`. This one component therefore deviates from the
-  all-SUSE story.
-- **DAG dependencies** are installed at Airflow start via `_PIP_ADDITIONAL_REQUIREMENTS`
-  (pandas, networkx, scikit-learn, xgboost, imbalanced-learn, psycopg2-binary, gen-fraud-graph).
-  This is demo-grade — the packages install on every pod start, so the first boot takes a few
-  minutes. For production, **bake a custom Airflow image** (FROM apache/airflow:3.2.2 + `pip
-  install …`) and point `images.airflow` at it, dropping `_PIP_ADDITIONAL_REQUIREMENTS`.
+- **Airflow image (baked)**: the DAGs need real Python libraries (pandas, networkx,
+  scikit-learn, xgboost, imbalanced-learn, psycopg2, gen-fraud-graph). Installing them at pod
+  start via `_PIP_ADDITIONAL_REQUIREMENTS` did **not** work here: the hardened SUSE App
+  Collection Airflow image ships without `pip`, and even on a pip-capable image the install
+  (xgboost is ~98 MB) was **slower than Fleet's reconcile interval**, so the migration pod was
+  recreated mid-download and never finished → Airflow never became Ready. So this blueprint
+  uses a **baked custom image**: `ghcr.io/alessandro-festa/fraud-airflow:1.0.0`, built **FROM
+  the SUSE App Collection base** (`dp.apps.rancher.io/containers/apache-airflow:3.2.2-8.14`,
+  bootstrapped with `ensurepip`) with all deps pre-installed. Build recipe:
+  [`airflow-image/Dockerfile`](airflow-image/Dockerfile). To rebuild:
+  `cd airflow-image && docker build -t ghcr.io/<you>/fraud-airflow:1.0.0 .` (requires
+  `docker login dp.apps.rancher.io` with your App Collection credentials), then point
+  `images.airflow` at your image. Note: the published image is **arm64** (matching the sims
+  cluster); rebuild for amd64 if needed.
 - **Data stores**: transactions/labels/scores in PostgreSQL (`fraud-db`), anomaly vectors in
   Milvus. No graph database is required (ring detection runs in-DAG with networkx).
 - The XGBoost model is trained + used for batch scoring inside Airflow (results in Postgres);
