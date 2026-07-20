@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Go build artifacts
+/marketplace/bpm
+/marketplace/marketplace
+
+# OS
+.DS_Store

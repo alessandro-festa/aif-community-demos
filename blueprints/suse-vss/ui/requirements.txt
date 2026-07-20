@@ -1,0 +1,13 @@
+setuptools<80  # provides pkg_resources (removed in setuptools 81+), needed by pymilvus
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+opencv-python-headless==4.11.0.86
+numpy==2.2.1
+pymilvus==2.5.4
+requests==2.32.3
+yt-dlp>=2025.6.9
+# CLIP image/text embeddings for semantic frame search (CPU). torch is installed
+# separately from the CPU wheel index in the Dockerfile to avoid the huge CUDA build.
+Pillow>=10.4
+sentence-transformers>=3.0,<6

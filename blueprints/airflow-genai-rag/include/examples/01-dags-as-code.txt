@@ -1,0 +1,2 @@
+DAGs are just Python
+Your pipelines live in version control, get code-reviewed, and run in CI — because in Airflow a DAG is just Python. No clicking through a GUI, no drift between "what's deployed" and "what's in git". Author it, test it, ship it. #ApacheAirflow #DataEngineering

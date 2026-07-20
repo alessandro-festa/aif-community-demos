@@ -1,0 +1,2 @@
+One catalog, hardened and consistent
+Airflow, Ollama, Milvus — all from the SUSE Application Collection, all pulling from the same registry with the same pull secret. Compose them into a Blueprint, import it into AI Factory, and deploy the whole stack as one workload. #SUSE #AIFactory

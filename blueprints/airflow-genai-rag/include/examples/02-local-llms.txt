@@ -1,0 +1,2 @@
+Run your LLM where your data lives
+No API keys, no per-token bill, no data leaving the cluster. Ollama serves open models like llama3.2 right next to your pipeline, and it speaks plain HTTP so your Airflow tasks can call it in three lines. Private by default. #LocalLLM #Ollama

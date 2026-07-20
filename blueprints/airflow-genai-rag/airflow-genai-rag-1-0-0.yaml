@@ -1,0 +1,209 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: airflow-genai-rag
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: airflow-genai-rag-1-0-0
+# Airflow GenAI RAG (Ollama) — an all-SUSE derivation of Astronomer's
+# gen-ai-fine-tune-rag use case (https://github.com/astronomer/gen-ai-fine-tune-rag-use-case).
+# Apache Airflow orchestrates two pipelines against a local Ollama LLM:
+#   1. RAG ingestion — chunk a knowledge base, embed each chunk with Ollama
+#      (nomic-embed-text) and upsert into Milvus.
+#   2. Model customization — build an Ollama Modelfile from example "style" posts
+#      (base model + SYSTEM persona + few-shot messages) and `ollama create` a
+#      custom model tag. This is the CPU-friendly, no-GPU analogue of the
+#      original's OpenAI hosted fine-tuning.
+# A local FastAPI + SUSE-styled demo UI (blueprints/airflow-genai-rag/ui) then does
+# RAG: embed a topic -> Milvus search -> generate a grounded post with the custom model.
+#
+# All three components come from the SUSE Application Collection. The Airflow DAGs
+# are delivered via git-sync from a public repo (set dags.gitSync.repo/subPath below);
+# the DAGs talk to Ollama and Milvus over HTTP (requests only) so the stock Airflow
+# image needs no extra Python packages.
+spec:
+  source: SUSE
+  displayName: Airflow GenAI RAG (Ollama)
+  version: 1.0.0
+  description: |
+    Apache Airflow + Ollama + Milvus GenAI RAG pipeline, all from the SUSE
+    Application Collection. A derivation of Astronomer's gen-ai-fine-tune-rag use
+    case that swaps Astro Runtime + OpenAI for SUSE-shipped Airflow and a local
+    Ollama LLM (CPU). Airflow orchestrates: (1) knowledge-base ingestion — chunk +
+    embed (nomic-embed-text) + upsert into Milvus; (2) model customization — build
+    an Ollama Modelfile from example posts and create a custom model (the no-GPU
+    analogue of OpenAI fine-tuning). A local FastAPI + SUSE-styled demo UI performs
+    RAG generation against the result.
+
+    Prerequisites (install on the target cluster BEFORE creating an AIWorkload):
+      * SUSE AI Factory operator (owns the Blueprint / AIWorkload CRDs).
+      * The `application-collection` ClusterRepo plus an Opaque secret carrying the
+        raw `user` + `token` for dp.apps.rancher.io.
+      * A default StorageClass (Airflow/Ollama/Milvus all use PVCs).
+      * cert-manager (for the Airflow UI ingress TLS).
+
+    Before importing, push this blueprint folder to a PUBLIC git repo and point the
+    apache-airflow component's `dags.gitSync.repo` + `subPath` at it (defaults below
+    are placeholders).
+
+    After the AIWorkload is Ready:
+      * Reach the Airflow UI via the `airflow-genai` ingress host (add a DNS / hosts
+        entry to the cluster ingress). Trigger `ingest_knowledge_base`, then
+        `customize_model`.
+      * Run the demo UI locally — see blueprints/airflow-genai-rag/README.md.
+  components:
+  # ----------------------------------------------------------------------------
+  # Ollama — local LLM inference (chat + embeddings), CPU only.
+  # Pinned service name so DAGs and open components reach it at http://ollama:11434.
+  # ----------------------------------------------------------------------------
+  - chartName: ollama
+    chartRepo: application-collection
+    chartVersion: 1.55.0
+    values:
+      fullnameOverride: ollama
+      image:
+        pullPolicy: IfNotPresent
+        registry: dp.apps.rancher.io
+        repository: containers/ollama
+        tag: 0.21.2-11.48
+      ollama:
+        gpu:
+          # CPU-only — no GPU required for this blueprint.
+          enabled: false
+          draEnabled: false
+        models:
+          # A small CPU-friendly chat model + the embedding model used for RAG.
+          pull:
+          - llama3.2:1b
+          - nomic-embed-text
+          run:
+          - llama3.2:1b
+        port: 11434
+      # Persist pulled models across pod restarts.
+      persistentVolume:
+        enabled: true
+        accessModes:
+        - ReadWriteOnce
+        size: 20Gi
+      resources:
+        limits: {}
+        requests: {}
+      runtimeClassName: ""
+      service:
+        port: 11434
+        type: ClusterIP
+  # ----------------------------------------------------------------------------
+  # Milvus — vector store for the RAG knowledge base (standalone, minimal).
+  # The proxy REST API (proxy.http.enabled) lets the DAGs use HTTP only.
+  # Reachable at http://milvus:19530.
+  # ----------------------------------------------------------------------------
+  - chartName: milvus
+    chartRepo: application-collection
+    chartVersion: 5.0.22
+    values:
+      cluster:
+        enabled: false
+      image:
+        all:
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+          repository: containers/milvus
+          tag: 2.6.18-8.4
+      # Single-node etcd (no 3-node quorum).
+      etcd:
+        enabled: true
+        replicaCount: 1
+      # Kafka OFF — standalone Milvus uses the embedded woodpecker queue.
+      kafka:
+        enabled: false
+      minio:
+        enabled: true
+        mode: standalone
+        name: minio
+        replicas: 1
+        rootPath: file
+        users:
+        - accessKey: minioadmin
+          policy: consoleAdmin
+          secretKey: minioadmin
+      # Expose the RESTful v2 API on the proxy (used by the Airflow DAGs).
+      proxy:
+        enabled: true
+        http:
+          enabled: true
+      standalone:
+        messageQueue: woodpecker
+        persistence:
+          enabled: true
+          persistentVolumeClaim:
+            accessModes: ReadWriteOnce
+            size: 50Gi
+      streaming:
+        enabled: true
+        woodpecker:
+          embedded: true
+          storage:
+            type: minio
+      service:
+        port: 19530
+        portName: milvus
+        type: ClusterIP
+  # ----------------------------------------------------------------------------
+  # Apache Airflow — orchestrates the ingestion + customization DAGs.
+  # DAGs are pulled via git-sync from a public repo; they use `requests` only, so
+  # no extra pip packages are needed in the Airflow image.
+  # ----------------------------------------------------------------------------
+  - chartName: apache-airflow
+    chartRepo: application-collection
+    chartVersion: 1.22.0
+    values:
+      # LocalExecutor keeps the footprint small (no Celery workers / Redis needed
+      # for a demo). The bundled PostgreSQL is used for metadata.
+      executor: LocalExecutor
+      # Airflow 3.x has no separate flower/worker for LocalExecutor.
+      redis:
+        enabled: false
+      flower:
+        enabled: false
+      images:
+        airflow:
+          repository: containers/apache-airflow
+          tag: 3.2.2-8.14
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+      # Deliver the DAGs from a public git repo. EDIT repo + subPath to point at
+      # wherever you pushed this blueprint folder (see README).
+      dags:
+        gitSync:
+          enabled: true
+          repo: https://github.com/alessandro-festa/aif-community-demos.git
+          branch: main
+          ref: main
+          rev: HEAD
+          depth: 1
+          # DAGs live under this path within the repo.
+          subPath: blueprints/airflow-genai-rag/dags
+          period: 30s
+      # In-cluster service endpoints the DAGs read from (see dags/*.py).
+      env:
+      - name: OLLAMA_BASE_URL
+        value: http://ollama:11434
+      - name: MILVUS_URI
+        value: http://milvus:19530
+      - name: EMBED_MODEL
+        value: nomic-embed-text
+      - name: BASE_MODEL
+        value: llama3.2:1b
+      - name: CUSTOM_MODEL
+        value: astra-custom
+      # Expose the Airflow 3 API Server (the web UI) via ingress.
+      ingress:
+        apiServer:
+          enabled: true
+          ingressClassName: nginx
+          annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          hosts:
+          - name: airflow-genai
+            tls:
+              enabled: true

@@ -1,0 +1,61 @@
+id: airflow-genai-rag
+displayName: Airflow GenAI RAG (Ollama)
+description: >-
+  Apache Airflow + Ollama + Milvus GenAI RAG pipeline, all from the SUSE Application
+  Collection. A derivation of Astronomer's gen-ai-fine-tune-rag use case: Airflow
+  orchestrates knowledge-base ingestion and Ollama model customization; a local
+  SUSE-styled UI generates grounded posts via RAG.
+category: ai-blueprints
+tags: [airflow, ollama, milvus, rag]
+blueprintFile: airflow-genai-rag-1-0-0.yaml
+prerequisites:
+  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
+  - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
+  - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
+localFrontend:
+  dir: ui
+  runtime: python
+  install:
+    - "-r ui/requirements.txt"
+  entry: app.main:app
+  port: 8000
+  openPath: /
+  env:
+    OLLAMA_BASE_URL: "http://localhost:11434"
+    MILVUS_URI: "http://localhost:19530"
+  portForwards:
+    - {name: ollama, service: ollama, local: 11434, remote: 11434}
+    - {name: milvus, service: milvus, local: 19530, remote: 19530}
+guide:
+  - title: Import the blueprint
+    body: |
+      Applies the Blueprint CR to the selected cluster. This adds the blueprint to the
+      SUSE AI Factory catalog — it does not deploy anything yet.
+    action: {type: import}
+  - title: Create the AIWorkload (SUSE AI Factory UI)
+    body: |
+      In the SUSE AI Factory UI, go to **Blueprints → Airflow GenAI RAG (Ollama) →
+      Create AIWorkload**, choose a target **namespace**, and deploy. Wait for the
+      Airflow, Ollama and Milvus pods to be Ready. Enter the namespace you chose below
+      so the following steps can reach the services.
+
+      > Note: the blueprint pulls its Airflow DAGs via git-sync from a public repo — set
+      > `dags.gitSync.repo`/`subPath` on the blueprint before deploying if you forked it.
+    action: {type: namespace-input}
+  - title: Run the pipeline in Airflow
+    body: |
+      Open the Airflow UI (the `airflow-genai` ingress host) and trigger the
+      **`ingest_knowledge_base`** DAG, then **`customize_model`**. The first embeds the
+      knowledge base into Milvus; the second builds the customized `astra-custom` model
+      on Ollama.
+  - title: Launch the demo UI
+    body: |
+      Starts `kubectl port-forward` to Ollama (11434) and Milvus (19530) and runs the
+      Astra FastAPI UI locally.
+    action: {type: start-frontend}
+  - title: Generate a post
+    body: |
+      Open the demo UI, enter a topic, and hit **Generate**. It embeds the topic,
+      retrieves the closest knowledge-base chunks from Milvus, and asks `astra-custom`
+      to write a grounded post — showing the retrieved sources alongside.
+    action: {type: open-url, url: "http://localhost:8000"}

@@ -1,0 +1,2 @@
+Stop your model from making things up
+RAG grounds every answer in your own docs: embed the question, pull the closest chunks from Milvus, hand them to the model as context. The result cites real facts instead of confident guesses. Retrieval first, generation second. #RAG #VectorSearch

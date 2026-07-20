@@ -1,0 +1,57 @@
+id: suse-vss
+displayName: SUSE VSC (Video Search & Summarization)
+description: >-
+  An all-SUSE / non-NVIDIA Video Search and Summarization stack on CPU. Ollama
+  serves moondream:1.8b (multimodal vision+text) and Milvus stores each frame's CLIP
+  embedding. The SUSE-styled UI runs locally: ingest a video by URL / upload / webcam
+  / YouTube / RTSP, run a prompt, and search past frames by text.
+category: ai-blueprints
+tags: [vss, ollama, milvus, cpu, multimodal]
+blueprintFile: suse-vss-minimal-1-0-0.yaml
+prerequisites:
+  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
+  - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
+  - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
+localFrontend:
+  dir: ui
+  runtime: python
+  # torch (CPU) comes from the dedicated wheel index to avoid the huge CUDA build,
+  # then the rest of the requirements. First run also downloads the CLIP model.
+  install:
+    - "torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu"
+    - "-r ui/requirements.txt"
+  entry: app.main:app
+  port: 8000
+  openPath: /
+  env:
+    OLLAMA_BASE_URL: "http://localhost:11434/v1"
+    MILVUS_URI: "http://localhost:19530"
+    VLM_MODEL: "moondream:1.8b"
+  portForwards:
+    - {name: ollama, service: ollama, local: 11434, remote: 11434}
+    - {name: milvus, service: milvus, local: 19530, remote: 19530}
+guide:
+  - title: Import the blueprint
+    body: |
+      Applies the SUSE VSC Blueprint CR (Ollama + Milvus) to the selected cluster.
+      This adds the Blueprint to the SUSE AI Factory catalog — it does not deploy it yet.
+    action: {type: import}
+  - title: Create the AIWorkload (SUSE AI Factory UI)
+    body: |
+      In the SUSE AI Factory UI, go to **Blueprints → SUSE VSC → Create AIWorkload**,
+      choose a target **namespace**, and deploy. Wait for the Ollama and Milvus pods to
+      be Ready (Ollama will pull `moondream:1.8b` on first start). Enter the namespace
+      you chose below so the next steps can reach the services.
+    action: {type: namespace-input}
+  - title: Launch the SUSE VSC UI
+    body: |
+      Starts `kubectl port-forward` to Ollama (11434) and Milvus (19530) and runs the
+      SUSE VSC FastAPI UI locally. The first launch installs CPU PyTorch + the CLIP
+      model, so it can take a few minutes.
+    action: {type: start-frontend}
+  - title: Analyse a video
+    body: |
+      Open the UI, pick a video source (URL / upload / webcam / YouTube / RTSP), choose
+      or type a prompt, and hit **Analyse**. Then use the Search box for text→image
+      frame search over what you have ingested.
+    action: {type: open-url, url: "http://localhost:8000"}

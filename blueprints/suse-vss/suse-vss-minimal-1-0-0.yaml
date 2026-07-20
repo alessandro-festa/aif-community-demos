@@ -1,0 +1,125 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: suse-vss-minimal
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: suse-vss-minimal-1-0-0
+# SUSE VSC — an all-SUSE / non-NVIDIA take on Video Search and Summarization,
+# running purely on CPU. Ported from the sims example blueprint, with one change:
+# the in-cluster suse-vss-ui chart component is REMOVED. The UI here runs as a
+# LOCAL frontend, started by the Blueprint Marketplace and pointed at the
+# in-cluster Ollama + Milvus via kubectl port-forward. So this Blueprint CR only
+# deploys the two backend services:
+#   * Ollama — moondream:1.8b multimodal (vision+text) model for frame/image
+#     understanding + summarization (CPU). Frame search uses an in-app CLIP model
+#     inside the local UI, not Ollama.
+#   * Milvus — stores each frame's CLIP image embedding, thumbnail and metadata.
+# No nvcr.io, no NGC token, no nvidia-blueprints repo, no nim-operator, and no
+# ghcr.io UI image/chart.
+spec:
+  source: SUSE
+  displayName: SUSE VSC (Video Search and Summarization)
+  version: 1.0.0
+  description: |
+    SUSE VSC — an all-SUSE / non-NVIDIA Video Search and Summarization stack,
+    running purely on CPU. Ollama serves moondream:1.8b (small multimodal
+    vision+text model for frame/image understanding + summarization); Milvus stores
+    each frame's CLIP embedding, thumbnail and metadata.
+
+    This Blueprint deploys only the backend services (Ollama + Milvus). The SUSE VSC
+    UI runs locally via the Blueprint Marketplace (ingest a video by URL / upload /
+    webcam / YouTube / RTSP, run a pre-baked or custom prompt, and search past frames
+    by text via CLIP), connecting to the cluster over kubectl port-forward. No NVIDIA
+    components — no nvcr.io image, no NGC token, no nvidia-blueprints repo, no
+    nim-operator.
+
+    Prerequisites: the SUSE AI Factory operator, the application-collection
+    ClusterRepo (+ credentials secret), a default StorageClass, and cert-manager.
+    After importing, create an AIWorkload from this Blueprint in the AI Factory UI,
+    then launch the local UI from the marketplace guide.
+  components:
+  - chartName: ollama
+    chartRepo: application-collection
+    chartVersion: 1.55.0
+    values:
+      # Pin the service name so the local UI's port-forward + URLs are stable.
+      fullnameOverride: ollama
+      image:
+        pullPolicy: IfNotPresent
+        registry: dp.apps.rancher.io
+        repository: containers/ollama
+        tag: 0.21.2-11.48
+      ollama:
+        gpu:
+          # CPU-only — Ollama runs the model on CPU by default.
+          enabled: false
+          draEnabled: false
+        models:
+          # moondream:1.8b is a small CPU-friendly multimodal model (VLM + chat).
+          # Frame search embeddings are produced by an in-app CLIP model, not Ollama.
+          pull:
+          - moondream:1.8b
+          run:
+          - moondream:1.8b
+        port: 11434
+      # Persist the pulled models so a pod restart doesn't re-download them.
+      persistentVolume:
+        enabled: true
+        accessModes:
+        - ReadWriteOnce
+        size: 20Gi
+      resources:
+        limits: {}
+        requests: {}
+      runtimeClassName: ""
+      service:
+        port: 11434
+        type: ClusterIP
+  - chartName: milvus
+    chartRepo: application-collection
+    chartVersion: 5.0.22
+    values:
+      # Standalone (single-node) Milvus — keep the footprint minimal.
+      cluster:
+        enabled: false
+      image:
+        all:
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+          repository: containers/milvus
+          tag: 2.6.18-8.4
+      # etcd: single replica (no 3-node quorum).
+      etcd:
+        enabled: true
+        replicaCount: 1
+      # Kafka OFF — standalone Milvus uses the embedded woodpecker message queue.
+      kafka:
+        enabled: false
+      minio:
+        enabled: true
+        mode: standalone
+        name: minio
+        replicas: 1
+        rootPath: file
+        users:
+        - accessKey: minioadmin
+          policy: consoleAdmin
+          secretKey: minioadmin
+      standalone:
+        messageQueue: woodpecker
+        persistence:
+          enabled: true
+          persistentVolumeClaim:
+            accessModes: ReadWriteOnce
+            size: 50Gi
+      streaming:
+        enabled: true
+        woodpecker:
+          embedded: true
+          storage:
+            type: minio
+      service:
+        port: 19530
+        portName: milvus
+        type: ClusterIP

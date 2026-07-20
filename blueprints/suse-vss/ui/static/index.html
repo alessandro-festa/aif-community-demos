@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SUSE VSC — Video Search &amp; Summarization</title>
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/suse.css" />
+</head>
+<body>
+  <header>
+    <img src="/favicon.svg" alt="SUSE" />
+    <h1>SUSE VSC — Video Search &amp; Summarization</h1>
+    <span class="tag">non-NVIDIA · CPU · Ollama + Milvus</span>
+  </header>
+
+  <main>
+    <!-- Controls -->
+    <section class="card">
+      <h2>Analyse a video</h2>
+
+      <div class="tabs" id="tabs">
+        <button data-tab="url" class="active">URL</button>
+        <button data-tab="upload">Upload</button>
+        <button data-tab="webcam">Webcam</button>
+        <button data-tab="youtube">YouTube</button>
+        <button data-tab="rtsp">RTSP</button>
+      </div>
+
+      <div id="pane-url" class="pane">
+        <label>Video URL (http/https, direct .mp4)</label>
+        <input id="url" placeholder="https://…/sample.mp4" />
+      </div>
+      <div id="pane-upload" class="pane" hidden>
+        <label>Video file</label>
+        <input id="file" type="file" accept="video/*" />
+      </div>
+      <div id="pane-webcam" class="pane" hidden>
+        <label>Camera</label>
+        <div class="row">
+          <select id="camera"></select>
+          <button id="cam-start" style="max-width:90px;margin-top:0;">Start</button>
+        </div>
+        <video id="cam" autoplay muted playsinline class="preview-vid" style="margin-top:10px;"></video>
+        <div id="cam-status" class="muted"></div>
+      </div>
+      <div id="pane-youtube" class="pane" hidden>
+        <label>YouTube URL</label>
+        <input id="youtube" placeholder="https://www.youtube.com/watch?v=…" />
+      </div>
+      <div id="pane-rtsp" class="pane" hidden>
+        <label>RTSP stream URL</label>
+        <input id="rtsp" placeholder="rtsp://user:pass@camera/stream" />
+      </div>
+
+      <label>Prompt preset</label>
+      <select id="prompt-id"></select>
+
+      <label>Custom prompt (optional — overrides preset)</label>
+      <textarea id="prompt" placeholder="e.g. Count the people wearing helmets"></textarea>
+
+      <label>VLM model (Ollama) — lighter models run faster on CPU</label>
+      <div class="row">
+        <input id="model" list="model-list" placeholder="gemma3:4b" />
+        <button id="pull" style="max-width:90px;margin-top:0;">Pull</button>
+      </div>
+      <datalist id="model-list"></datalist>
+      <div id="model-status" class="muted"></div>
+
+      <div class="row">
+        <div>
+          <label>Capture a frame every … seconds (blank = auto)</label>
+          <input id="interval" type="number" placeholder="auto" min="0.1" step="0.1" />
+        </div>
+      </div>
+      <div id="cpu-hint" class="muted"></div>
+
+      <button class="primary" id="run">Analyse</button>
+      <button id="stop" class="stop" hidden>Stop</button>
+      <div id="analyze-error" class="error"></div>
+    </section>
+
+    <!-- Results -->
+    <section>
+      <div class="card section">
+        <h2>Input video</h2>
+        <div id="preview" class="muted">The input video appears here so you can compare it with the model's output.</div>
+      </div>
+
+      <div class="card section">
+        <h2>Result</h2>
+        <div id="summary" class="muted">Run an analysis to see the model's summary here.</div>
+        <div class="frames" id="frames-out"></div>
+      </div>
+
+      <div class="card section">
+        <h2>Search indexed videos</h2>
+        <div class="row">
+          <input id="query" placeholder="Search captions, e.g. 'a forklift'" />
+          <button class="primary" id="search" style="margin-top:0; max-width:120px;">Search</button>
+        </div>
+        <div id="search-error" class="error"></div>
+        <div id="hits"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

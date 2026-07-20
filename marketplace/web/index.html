@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SUSE AI Factory — Blueprint Marketplace</title>
+  <link rel="stylesheet" href="/marketplace.css" />
+</head>
+<body>
+  <header>
+    <span class="brand">SUSE</span>
+    <h1>Blueprint Marketplace</h1>
+    <nav class="tabs" id="tabs">
+      <button data-view="catalog" class="active">Catalog</button>
+      <button data-view="settings">Settings</button>
+    </nav>
+    <span class="spacer"></span>
+    <span class="cluster" id="cluster-chip" title="Target cluster">
+      <span class="dot" id="cluster-dot"></span>
+      <span id="cluster-name">no cluster</span>
+    </span>
+    <button class="link" id="theme-toggle" title="Toggle theme">☾</button>
+  </header>
+
+  <main id="app"><!-- rendered by app.js --></main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

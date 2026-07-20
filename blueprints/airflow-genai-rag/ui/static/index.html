@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Astra — Airflow GenAI RAG</title>
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/suse.css" />
+</head>
+<body>
+  <header>
+    <img src="/favicon.svg" alt="SUSE" />
+    <h1>Astra — Airflow GenAI RAG</h1>
+    <span class="tag">CPU · Ollama + Milvus · SUSE App Collection</span>
+  </header>
+
+  <main>
+    <!-- Controls -->
+    <section class="card">
+      <h2>Generate a post</h2>
+
+      <label>Topic / idea</label>
+      <textarea id="topic" placeholder="e.g. Why RAG beats guessing"></textarea>
+
+      <label>Model (Ollama)</label>
+      <input id="model" list="model-list" placeholder="astra-custom" />
+      <datalist id="model-list"></datalist>
+      <div id="model-status" class="muted"></div>
+
+      <div class="row">
+        <div>
+          <label>Sources to retrieve (top-k)</label>
+          <input id="topk" type="number" value="4" min="1" max="20" />
+        </div>
+      </div>
+
+      <button class="primary" id="run">Generate</button>
+      <div id="gen-error" class="error"></div>
+      <div id="health" class="muted" style="margin-top:12px;"></div>
+    </section>
+
+    <!-- Results -->
+    <section>
+      <div class="card section">
+        <h2>Generated post</h2>
+        <div id="post" class="muted">Enter a topic and hit Generate to see a grounded post here.</div>
+      </div>
+
+      <div class="card section">
+        <h2>Retrieved sources (RAG context)</h2>
+        <div id="sources" class="muted">The knowledge-base chunks used to ground the post appear here.</div>
+      </div>
+
+      <div class="card section">
+        <h2>Search the knowledge base</h2>
+        <div class="row">
+          <input id="query" placeholder="Search the KB, e.g. 'vector index'" />
+          <button class="primary" id="search" style="margin-top:0; max-width:120px;">Search</button>
+        </div>
+        <div id="search-error" class="error"></div>
+        <div id="hits"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

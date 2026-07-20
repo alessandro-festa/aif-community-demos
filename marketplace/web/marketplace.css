@@ -1,0 +1,179 @@
+/* SUSE design tokens — dark by default, matching the sims UI and the blueprint
+   demo UIs. Light theme via [data-theme="light"]. */
+@font-face {
+  font-family: "SUSE";
+  src: url("/fonts/SUSE-Variable.woff2") format("woff2");
+  font-weight: 100 800;
+  font-display: swap;
+}
+
+:root {
+  --bg: #0a1e1a;
+  --surface: #122b25;
+  --surface-2: #16332c;
+  --border: #1e3d35;
+  --text: #e8ede9;
+  --text-muted: #7f9990;
+  --accent: #fe7c3f;
+  --accent-hover: #ff9966;
+  --mint: #90ebcd;
+  --success: #30ba78;
+  --danger: #dc3545;
+  --warning: #ffc107;
+  --on-accent: #08110e;
+  --log-bg: #061210;
+  --log-fg: #c9d9d1;
+  --radius: 8px;
+}
+[data-theme="light"] {
+  --bg: #f5f7f6;
+  --surface: #ffffff;
+  --surface-2: #eef2f0;
+  --border: #dee2e6;
+  --text: #0c322c;
+  --text-muted: #4a6e64;
+  --log-bg: #0c322c;
+  --log-fg: #d1f4e0;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "SUSE", system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+a { color: var(--accent); }
+
+/* Top bar */
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+header .brand {
+  font-weight: 800;
+  letter-spacing: .5px;
+  background: var(--accent);
+  color: var(--on-accent);
+  padding: 3px 9px;
+  border-radius: 5px;
+}
+header h1 { font-size: 1rem; font-weight: 700; margin: 0; }
+header .spacer { margin-left: auto; }
+header .cluster {
+  display: flex; align-items: center; gap: 7px;
+  font-size: .82rem; color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px;
+}
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-muted); display: inline-block; }
+.dot.ok { background: var(--success); }
+.dot.bad { background: var(--danger); }
+
+nav.tabs { display: flex; gap: 4px; }
+nav.tabs button {
+  background: transparent; border: none; border-bottom: 2px solid transparent;
+  color: var(--text-muted); padding: 6px 10px; cursor: pointer; font-size: .9rem;
+}
+nav.tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+
+main { max-width: 1080px; margin: 0 auto; padding: 22px; }
+
+/* Buttons */
+button {
+  cursor: pointer; font-family: inherit; font-size: .875rem; font-weight: 500;
+  border: 2px solid var(--border); background: var(--surface); color: var(--text);
+  padding: 8px 14px; border-radius: 5px;
+  transition: background .15s, border-color .15s, color .15s;
+}
+button:hover { background: var(--border); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; }
+button.primary:hover { background: transparent; color: var(--text); }
+button.danger { border-color: var(--danger); color: var(--danger); background: transparent; }
+button.danger:hover { background: var(--danger); color: #fff; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+button.link { border: none; background: none; color: var(--accent); padding: 0; font-weight: 600; }
+
+/* Inputs */
+input, select, textarea {
+  font-family: inherit; font-size: .9rem; width: 100%;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 5px; padding: 9px 11px;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(254,124,63,.22);
+}
+label { display: block; font-size: .72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin: 12px 0 5px; }
+
+/* Cards + grid */
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px;
+}
+.card.clickable { cursor: pointer; transition: border-color .15s, transform .1s; }
+.card.clickable:hover { border-color: var(--accent); transform: translateY(-2px); }
+.card h3 { margin: 0 0 8px; font-size: 1rem; }
+.card p { margin: 0 0 12px; color: var(--text-muted); font-size: .88rem; }
+
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.badge {
+  display: inline-block; padding: 2px 9px; border-radius: 999px;
+  font-size: .72rem; font-weight: 600;
+  background: rgba(144,235,205,.14); color: var(--mint);
+}
+.badge.neutral { background: rgba(148,163,184,.18); color: var(--text-muted); }
+.badge.ok { background: rgba(48,186,120,.15); color: var(--success); }
+.badge.bad { background: rgba(220,53,69,.15); color: var(--danger); }
+.badge.warn { background: rgba(255,193,7,.15); color: var(--warning); }
+
+/* Sections */
+.row { display: flex; gap: 12px; align-items: center; }
+.section + .section { margin-top: 18px; }
+.muted { color: var(--text-muted); font-size: .85rem; }
+h2 { font-size: 1.2rem; margin: 0 0 4px; }
+
+/* Prereq checklist */
+.check { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.check:last-child { border-bottom: none; }
+.check .status { font-weight: 700; }
+.check .status.ok { color: var(--success); }
+.check .status.bad { color: var(--danger); }
+
+/* Log console */
+pre.log {
+  background: var(--log-bg); color: var(--log-fg);
+  border-radius: 6px; padding: 12px; margin: 12px 0 0;
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .8rem;
+  max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+
+/* Stepper (guided demo) */
+.stepper { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.stepper .step {
+  font-size: .78rem; color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px;
+}
+.stepper .step.active { color: var(--on-accent); background: var(--accent); border-color: var(--accent); font-weight: 700; }
+.stepper .step.done { color: var(--mint); border-color: var(--mint); }
+
+.step-body { line-height: 1.6; }
+.step-body code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: .85em; }
+.step-nav { display: flex; justify-content: space-between; margin-top: 20px; }
+
+.spinner {
+  display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite;
+  vertical-align: middle; margin-right: 6px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.error { color: var(--danger); font-size: .85rem; margin-top: 8px; }
+.back { margin-bottom: 14px; }
