@@ -12,10 +12,28 @@ prompt in the app instead.
 """
 from __future__ import annotations
 
+import time
+from datetime import timedelta
+
 import pendulum
 from airflow.decorators import dag, task
 
-from common import BASE_MODEL, CUSTOM_MODEL, ollama_create_model, pg_query
+from common import BASE_MODEL, CUSTOM_MODEL, ollama_create_model, ollama_tags, pg_query
+
+
+def _wait_for_ollama(timeout_s: int = 1800, interval_s: int = 15):
+    """Block until Ollama answers (it can take a while to pull models on first start)."""
+    deadline = time.monotonic() + timeout_s
+    last = None
+    while time.monotonic() < deadline:
+        try:
+            ollama_tags()
+            return
+        except Exception as e:  # noqa: BLE001
+            last = e
+        print("[customize_model] waiting for Ollama…", flush=True)
+        time.sleep(interval_s)
+    raise RuntimeError(f"Ollama not ready after {timeout_s}s: {last}")
 
 SYSTEM_PERSONA = (
     "You are Ava, a calm, empathetic insurance customer-support agent. Help the "
@@ -52,8 +70,9 @@ def customize_model():
             messages.append({"role": "assistant", "content": resolution})
         return messages
 
-    @task
+    @task(retries=3, retry_delay=timedelta(minutes=3))
     def create(messages: list[dict]) -> dict:
+        _wait_for_ollama()  # tolerate a slow first-start model pull
         ollama_create_model(CUSTOM_MODEL, BASE_MODEL, SYSTEM_PERSONA, messages)
         return {"model": CUSTOM_MODEL, "from": BASE_MODEL, "examples": len(messages) // 2}
 

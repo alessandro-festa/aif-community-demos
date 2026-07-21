@@ -12,6 +12,9 @@ carry a decision + resolution). Trigger after generate_dataset.
 """
 from __future__ import annotations
 
+import time
+from datetime import timedelta
+
 import pendulum
 from airflow.decorators import dag, task
 
@@ -25,6 +28,22 @@ from common import (
 )
 
 
+def _wait_for_embeddings(timeout_s: int = 1800, interval_s: int = 15):
+    """Block until the embedding endpoint answers (Ollama/vLLM can take a while to
+    pull the model on first start). Raises if still unreachable after timeout."""
+    deadline = time.monotonic() + timeout_s
+    last = None
+    while time.monotonic() < deadline:
+        try:
+            if embed("readiness probe"):
+                return
+        except Exception as e:  # noqa: BLE001 — endpoint not up / model not pulled yet
+            last = e
+        print("[index_cases] waiting for the embedding endpoint…", flush=True)
+        time.sleep(interval_s)
+    raise RuntimeError(f"embedding endpoint not ready after {timeout_s}s: {last}")
+
+
 @dag(
     dag_id="index_cases",
     schedule=None,
@@ -33,8 +52,9 @@ from common import (
     tags=["insurance-support", "rag", "index"],
 )
 def index_cases():
-    @task
+    @task(retries=3, retry_delay=timedelta(minutes=3))
     def build_index() -> dict:
+        _wait_for_embeddings()  # tolerate a slow first-start model pull
         rows = pg_query("""
             SELECT t.ticket_id, t.subject, t.body, t.status,
                    COALESCE(c.accident_type, ''), COALESCE(p.product_type, ''),
