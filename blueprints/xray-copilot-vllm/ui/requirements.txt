@@ -1,0 +1,14 @@
+setuptools<80  # provides pkg_resources (removed in setuptools 81+), needed by pymilvus
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+numpy==2.2.1
+pymilvus==2.5.4
+requests==2.32.3
+Pillow>=10.4
+# BiomedCLIP image/text embeddings for X-ray search (CPU). torch is installed
+# separately from the CPU wheel index (see marketplace.yaml install order /
+# Dockerfile) to avoid the multi-GB CUDA build.
+open_clip_torch>=2.24
+timm>=0.9.8
+transformers>=4.40  # BiomedCLIP's text tower is PubMedBERT (a HF transformers model)

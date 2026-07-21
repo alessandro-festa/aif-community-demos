@@ -5,7 +5,7 @@ description: >-
   serves moondream:1.8b (multimodal vision+text) and Milvus stores each frame's CLIP
   embedding. The SUSE-styled UI runs locally: ingest a video by URL / upload / webcam
   / YouTube / RTSP, run a prompt, and search past frames by text.
-category: ai-blueprints
+category: media
 tags: [vss, ollama, milvus, cpu, multimodal]
 blueprintFile: suse-vss-minimal-1-0-0.yaml
 prerequisites:

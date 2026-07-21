@@ -1,0 +1,128 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: xray-copilot-ollama
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: xray-copilot-ollama-1-0-0
+# Chest X-ray Copilot (Ollama, CPU) — a medical-imaging demo.
+# A local SUSE-styled UI uploads a chest X-ray and asks a medical vision-language
+# model (MedGemma, served by Ollama over the OpenAI-compatible API) to analyse it,
+# then embeds the image with BiomedCLIP (in the UI, on CPU) and stores it in Milvus
+# for semantic (text->image) and similarity (image->image) search.
+#
+# CPU variant: MedGemma is pulled from the Ollama registry (no HuggingFace token
+# needed). LLaVA-Med is NOT available here — it has no first-class Ollama/GGUF path;
+# use the "Chest X-ray Copilot (vLLM, GPU)" blueprint for LLaVA-Med.
+#
+# The model tag below is a VISION-capable MedGemma 1.5 4B build (accepts image
+# input). Text-only MedGemma tags (e.g. alibayram/medgemma) fail X-ray analysis with
+# "this model is missing data required for image input". DEMO ONLY — not clinical.
+spec:
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
+  displayName: Chest X-ray Copilot (Ollama, CPU)
+  version: 1.0.0
+  description: |-
+    Medical-imaging demo on CPU: analyse a chest X-ray with a medical vision-language
+    model and search a Milvus index of X-rays by image or by text. Ollama serves
+    MedGemma (pulled from the Ollama registry — no HuggingFace token needed); a local
+    SUSE-styled UI runs the analysis and computes BiomedCLIP embeddings on CPU.
+
+    LLaVA-Med is not available in this CPU variant (no first-class Ollama path) — use
+    the vLLM/GPU blueprint for LLaVA-Med. MedGemma vision on CPU is slow; the model is
+    pulled on first start.
+
+    Prerequisites: the SUSE AI Factory operator, the application-collection
+    ClusterRepo (+ credentials secret), a default StorageClass, and cert-manager.
+    DEMO ONLY — not for clinical use.
+  components:
+  # ----------------------------------------------------------------------------
+  # Ollama — serves the medical vision model on CPU. Reachable at http://ollama:11434.
+  # ----------------------------------------------------------------------------
+  - chartName: ollama
+    chartRepo: application-collection
+    chartVersion: 1.55.0
+    values:
+      fullnameOverride: ollama
+      image:
+        pullPolicy: IfNotPresent
+        registry: dp.apps.rancher.io
+        repository: containers/ollama
+        tag: 0.21.2-11.48
+      ollama:
+        gpu:
+          enabled: false
+          draEnabled: false
+        models:
+          # Vision-capable MedGemma 1.5 4B (Q4_K_M, ~3.3 GB) from the Ollama registry
+          # — accepts image input (unlike the text-only alibayram/* tags). No HF token
+          # needed. Use :Q8_0 (5 GB) or :F16 (8.6 GB) for higher fidelity.
+          pull:
+          - dcarrascosa/medgemma-1.5-4b-it:Q4_K_M
+          run:
+          - dcarrascosa/medgemma-1.5-4b-it:Q4_K_M
+        port: 11434
+      persistentVolume:
+        enabled: true
+        accessModes:
+        - ReadWriteOnce
+        size: 20Gi
+      resources:
+        limits: {}
+        requests: {}
+      runtimeClassName: ""
+      service:
+        port: 11434
+        type: ClusterIP
+  # ----------------------------------------------------------------------------
+  # Milvus — vector DB for the BiomedCLIP X-ray embeddings (standalone + REST v2).
+  # Reachable in-cluster at http://milvus:19530.
+  # ----------------------------------------------------------------------------
+  - chartName: milvus
+    chartRepo: application-collection
+    chartVersion: 5.0.22
+    values:
+      cluster:
+        enabled: false
+      image:
+        all:
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+          repository: containers/milvus
+          tag: 2.6.18-8.4
+      etcd:
+        enabled: true
+        replicaCount: 1
+      kafka:
+        enabled: false
+      minio:
+        enabled: true
+        mode: standalone
+        name: minio
+        replicas: 1
+        rootPath: file
+        users:
+        - accessKey: minioadmin
+          policy: consoleAdmin
+          secretKey: minioadmin
+      proxy:
+        enabled: true
+        http:
+          enabled: true
+      standalone:
+        messageQueue: woodpecker
+        persistence:
+          enabled: true
+          persistentVolumeClaim:
+            accessModes: ReadWriteOnce
+            size: 50Gi
+      streaming:
+        enabled: true
+        woodpecker:
+          embedded: true
+          storage:
+            type: minio
+      service:
+        port: 19530
+        portName: milvus
+        type: ClusterIP

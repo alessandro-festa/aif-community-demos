@@ -1,0 +1,142 @@
+id: xray-copilot-vllm
+displayName: Chest X-ray Copilot (vLLM, GPU)
+description: >-
+  Upload a chest X-ray and get an analysis from a medical vision-language model
+  (MedGemma 1.5 4B, optionally LLaVA-Med 7B) served by vLLM on GPU, then search a
+  Milvus index of X-rays by image (similarity) or by text (semantic) using BiomedCLIP
+  embeddings. Demo only — not for clinical use.
+category: healthcare
+tags: [healthcare, xray, medgemma, llava-med, vllm, biomedclip, milvus, gpu, vision]
+blueprintFile: xray-copilot-vllm-1-0-0.yaml
+prerequisites:
+  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
+  - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
+  - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
+  - {id: gpuop, label: "GPU Operator",                    kind: namespace, name: gpu-operator}
+localFrontend:
+  dir: ui
+  runtime: python
+  install:
+    # CPU-only torch first (from the dedicated wheel index) so open_clip_torch does
+    # not pull the multi-GB CUDA build; then the rest. Paths are relative to the
+    # blueprint root.
+    - "torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu"
+    - "-r ui/requirements.txt"
+  entry: app.main:app
+  port: 8000
+  openPath: /
+  env:
+    # vLLM router is forwarded to :8010 (frontend itself uses :8000).
+    OPENAI_BASE_URL: "http://localhost:8010/v1"
+    OPENAI_API_KEY: "EMPTY"
+    DEFAULT_MODEL: "chaoyinshe/llava-med-v1.5-mistral-7b-hf"
+    MILVUS_URI: "http://localhost:19530"
+    CLIP_MODEL: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+    IMG_COLLECTION: "xray_embeddings"
+  portForwards:
+    - {name: vllm,   service: vllm-router-service, local: 8010, remote: 80}
+    - {name: milvus, service: milvus,              local: 19530, remote: 19530}
+# Pre-import wizard: LLaVA-Med 7B is the baseline model (ungated). Optionally also
+# serve MedGemma 1.5 4B, which is gated — its modelSpec carries a {{HF_TOKEN}}
+# placeholder that the HF-token input replaces at import time. The HF token is only
+# needed when MedGemma is enabled.
+importWizard:
+  title: "Models & HuggingFace token"
+  body: >-
+    The baseline model is **LLaVA-Med 7B** (research only, ungated — no token
+    needed). Optionally also serve **MedGemma 1.5 4B**, which is **gated**: accept the
+    terms at huggingface.co/google/medgemma-1.5-4b-it, create a read token, and paste
+    it below (only required if you enable MedGemma). Enabling MedGemma adds a second
+    GPU request.
+  targetComponent: vllm
+  inputs:
+    - id: hf-token
+      label: "HuggingFace token (only if enabling MedGemma)"
+      description: "Read token for the gated MedGemma model. Leave blank if you only use LLaVA-Med. Stored in the Blueprint CR values."
+      placeholder: "hf_…"
+      secret: true
+      required: false
+      replace: "{{HF_TOKEN}}"
+  options:
+    - id: enable-medgemma
+      label: "Also serve MedGemma 1.5 4B (gated — needs HF token)"
+      description: "Adds Google MedGemma (HAI-DEF terms) as a second model. Requires the HF token above and a second GPU."
+      default: false
+      inject:
+        servingEngineSpec:
+          modelSpec:
+            - name: medgemma-15-4b
+              registry: dp.apps.rancher.io
+              repository: containers/vllm-openai
+              tag: "0.19.0-5.29"
+              modelURL: google/medgemma-1.5-4b-it
+              hf_token: "{{HF_TOKEN}}"
+              replicaCount: 1
+              requestCPU: 6
+              requestMemory: "16Gi"
+              requestGPU: 1
+              pvcStorage: "50Gi"
+              vllmConfig:
+                maxModelLen: 32768
+                dtype: bfloat16
+                gpuMemoryUtilization: 0.9
+                extraArgs:
+                - "--trust-remote-code"
+                - "--limit-mm-per-prompt.image=1"
+componentUIs: []
+guide:
+  - title: Choose models & import
+    body: |
+      The baseline model is **LLaVA-Med 7B** (research only, ungated — no token
+      needed). Optionally enable **MedGemma 1.5 4B** and paste your **HuggingFace
+      token** (MedGemma is gated). **Importing** injects the token into the vLLM model
+      config and applies the Blueprint CR — it adds the Blueprint to the SUSE AI
+      Factory catalog, it does not deploy anything yet.
+
+      > Any token you enter is stored in the Blueprint CR values (visible via `kubectl
+      > get blueprint -o yaml`). Fine for a demo cluster; use a scoped read token.
+    action: {type: import}
+  - title: Create the AIWorkload (SUSE AI Factory UI)
+    body: |
+      In the SUSE AI Factory UI, go to **Blueprints → Chest X-ray Copilot (vLLM, GPU)
+      → Create AIWorkload**, choose a target **namespace**, and deploy. This needs a
+      node with a **real NVIDIA GPU** and the GPU Operator. The serving pod downloads
+      the model(s) on first start (several GB) — wait until the vLLM router + serving
+      pods and Milvus are Ready. Enter the namespace you chose below.
+    action: {type: namespace-input}
+  - title: Launch the demo UI
+    body: |
+      Starts `kubectl port-forward` to the vLLM router (`vllm-router-service:80` →
+      localhost:8010) and Milvus (`milvus:19530`), then runs the Chest X-ray Copilot
+      UI locally. If your Helm release name isn't `vllm`, adjust the port-forward
+      service name to `<release>-router-service`.
+    action: {type: start-frontend}
+  - title: Analyse an X-ray & search
+    body: |
+      Open the UI, pick a bundled **sample X-ray** (normal / lobar pneumonia /
+      congestive heart failure) or upload your own, choose the model, and hit
+      **Analyse**. Each analysed image is embedded with BiomedCLIP and indexed in
+      Milvus, so **Find similar X-rays** and the semantic search box start returning
+      results once you've analysed a few.
+
+      Try these **semantic search** queries (Copy → paste into the search box):
+
+      ```
+      left lower lobe pneumonia
+      ```
+
+      ```
+      enlarged heart, cardiomegaly
+      ```
+
+      ```
+      normal chest x-ray, clear lung fields
+      ```
+
+      ```
+      pleural effusion
+      ```
+
+      > BiomedCLIP shares one embedding space for images and text, so the same index
+      > answers both image→image similarity and text→image semantic search.
+    action: {type: open-url, url: "http://localhost:8000"}

@@ -1,0 +1,9 @@
+# Build output
+/bpm
+/dist/
+bpm-*-*
+SHA256SUMS
+*.tar.gz
+
+# OS cruft
+.DS_Store

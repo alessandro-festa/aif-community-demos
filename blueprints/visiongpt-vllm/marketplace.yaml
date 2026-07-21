@@ -5,7 +5,7 @@ description: >-
   AIS-Clemson's VisionGPT. vLLM serves Qwen2.5-VL-3B-Instruct on an NVIDIA GPU; a local
   UI samples frames from a walking video and returns a per-frame danger score + short
   reason at a selectable sensitivity. Requires a real GPU node.
-category: ai-blueprints
+category: safety
 tags: [visiongpt, vllm, qwen2.5-vl, vision, gpu]
 blueprintFile: visiongpt-vllm-1-0-0.yaml
 prerequisites:

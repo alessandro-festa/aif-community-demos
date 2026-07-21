@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -48,9 +49,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/blueprints/{id}/component-ui/stop", s.handleComponentUIStop)
 	mux.HandleFunc("GET /api/processes", s.handleProcesses)
 
-	// Static web UI (index.html fallback for the single page).
+	// Static web UI. Send no-store so browsers always fetch the current embedded
+	// assets (avoids stale cached app.js/css after a binary upgrade).
 	fileServer := http.FileServer(http.FS(s.web))
-	mux.Handle("/", fileServer)
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store, must-revalidate")
+		fileServer.ServeHTTP(w, r)
+	}))
 	return mux
 }
 
@@ -126,12 +131,23 @@ func (s *Server) handlePrereqs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"context": s.targetContext(ctx), "results": results})
 }
 
+type importReq struct {
+	// Selections are import-wizard option ids to inject before applying.
+	Selections []string `json:"selections"`
+	// Inputs are import-wizard input id -> entered value (e.g. an HF token),
+	// substituted into that input's Inject template before applying.
+	Inputs map[string]string `json:"inputs"`
+}
+
 func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	bp, ok := s.cat.Get(r.PathValue("id"))
 	if !ok {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("blueprint not found"))
 		return
 	}
+	var req importReq
+	_ = json.NewDecoder(r.Body).Decode(&req) // body optional
+
 	sse, flush, ok := beginSSE(w)
 	if !ok {
 		return
@@ -141,13 +157,65 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 		sse("error", "no target cluster selected (set one in Settings)")
 		return
 	}
-	crPath := bp.Dir + "/" + bp.BlueprintFile
-	sse("log", fmt.Sprintf("kubectl --context %s apply -f %s", kubeCtx, crPath))
 	emit := func(line string) { sse("log", line); flush() }
+
+	// Enforce required wizard inputs (e.g. a HuggingFace token for a gated model)
+	// before we touch the cluster.
+	if bp.ImportWizard != nil {
+		for _, in := range bp.ImportWizard.Inputs {
+			if in.Required && strings.TrimSpace(req.Inputs[in.ID]) == "" {
+				sse("error", fmt.Sprintf("%q is required", in.Label))
+				return
+			}
+		}
+	}
+
+	// Build the manifest to apply. With an import wizard + selections/inputs, the
+	// chosen options and entered values are merged into the target component before
+	// apply; otherwise the CR file is applied verbatim (preserving its comments).
+	crPath := bp.Dir + "/" + bp.BlueprintFile
+	applyPath := crPath
+	if bp.ImportWizard != nil && (len(req.Selections) > 0 || len(req.Inputs) > 0) {
+		manifest, err := buildImportManifest(bp, req.Selections, req.Inputs)
+		if err != nil {
+			sse("error", err.Error())
+			return
+		}
+		tmp, err := os.CreateTemp("", "bpm-import-*.yaml")
+		if err != nil {
+			sse("error", err.Error())
+			return
+		}
+		defer os.Remove(tmp.Name())
+		if _, err := tmp.Write(manifest); err != nil {
+			tmp.Close()
+			sse("error", err.Error())
+			return
+		}
+		tmp.Close()
+		applyPath = tmp.Name()
+		if len(req.Selections) > 0 {
+			sse("log", fmt.Sprintf("options selected: %s", strings.Join(req.Selections, ", ")))
+		}
+		// Never log input values — they may be secrets. Log which inputs were set.
+		if len(req.Inputs) > 0 {
+			var ids []string
+			for id, v := range req.Inputs {
+				if strings.TrimSpace(v) != "" {
+					ids = append(ids, id)
+				}
+			}
+			if len(ids) > 0 {
+				sse("log", fmt.Sprintf("inputs provided: %s", strings.Join(ids, ", ")))
+			}
+		}
+	}
+
+	sse("log", fmt.Sprintf("kubectl --context %s apply -f %s", kubeCtx, applyPath))
 	// Import can take a moment; use a generous timeout.
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
-	if err := kube.Apply(ctx, kubeCtx, crPath, emit); err != nil {
+	if err := kube.Apply(ctx, kubeCtx, applyPath, emit); err != nil {
 		sse("error", err.Error())
 		return
 	}

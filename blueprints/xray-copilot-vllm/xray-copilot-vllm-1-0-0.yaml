@@ -1,0 +1,131 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: xray-copilot-vllm
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: xray-copilot-vllm-1-0-0
+# Chest X-ray Copilot (vLLM, GPU) — a medical-imaging demo.
+# A local SUSE-styled UI uploads a chest X-ray and asks a medical vision-language
+# model (served by vLLM over the OpenAI-compatible API) to analyse it, then embeds
+# the image with BiomedCLIP (in the UI, on CPU) and stores it in Milvus for
+# semantic (text->image) and similarity (image->image) search.
+#
+# Models (served behind vllm-router-service:80):
+#   * LLaVA-Med 7B (chaoyinshe/llava-med-v1.5-mistral-7b-hf) — BASELINE / default.
+#     ⚠️ CC BY-NC 4.0 RESEARCH ONLY, not for clinical/deployed use. The -hf fork is
+#     ungated (no HF token needed); some vLLM versions need a LLaVA --chat-template.
+#   * MedGemma 1.5 4B (google/medgemma-1.5-4b-it) — OPTIONAL, appended by the wizard.
+#     GATED on HuggingFace, so the wizard's HF-token input fills the per-model
+#     hf_token before apply (replaces {{HF_TOKEN}}). Adds a second GPU request.
+#
+# Requires a real NVIDIA GPU node + the GPU Operator. For a CPU version (vision
+# MedGemma via Ollama, no LLaVA-Med) use the "Chest X-ray Copilot (Ollama, CPU)"
+# blueprint. DEMO ONLY — not a medical device, not for clinical decision-making.
+spec:
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
+  displayName: Chest X-ray Copilot (vLLM, GPU)
+  version: 1.0.0
+  description: |-
+    Medical-imaging demo: analyse a chest X-ray with a medical vision-language model
+    and search a Milvus index of X-rays by image or by text. vLLM serves LLaVA-Med 7B
+    (baseline, and, optionally, MedGemma 1.5 4B) on an NVIDIA GPU; a local SUSE-styled
+    UI runs the analysis and computes BiomedCLIP embeddings on CPU.
+
+    LLaVA-Med is the default model and is RESEARCH-ONLY (CC BY-NC 4.0) — not for
+    clinical/deployed use; its -hf fork is ungated (no HF token needed). Optionally
+    enable MedGemma 1.5 4B, which is gated on HuggingFace: accept the terms at
+    huggingface.co/google/medgemma-1.5-4b-it and paste an HF token in the wizard
+    (it's injected before apply). Enabling MedGemma adds a second GPU request.
+
+    Prerequisites: the SUSE AI Factory operator, the application-collection
+    ClusterRepo (+ credentials secret), a default StorageClass, and a node with a
+    real NVIDIA GPU plus the GPU Operator / device plugin. Models are downloaded on
+    first start. DEMO ONLY — not for clinical use.
+  components:
+  # ----------------------------------------------------------------------------
+  # vLLM — serves the medical vision-language model(s) behind vllm-router-service.
+  # Baseline: LLaVA-Med 7B (ungated -hf fork). The import wizard appends MedGemma
+  # when selected; {{HF_TOKEN}} is then replaced by the wizard's HF-token input.
+  # ----------------------------------------------------------------------------
+  - chartName: vllm
+    chartRepo: application-collection
+    chartVersion: 0.1.10
+    values:
+      servingEngineSpec:
+        runtimeClassName: nvidia
+        modelSpec:
+          - name: llava-med
+            registry: dp.apps.rancher.io
+            repository: containers/vllm-openai
+            tag: "0.19.0-5.29"
+            modelURL: chaoyinshe/llava-med-v1.5-mistral-7b-hf
+            replicaCount: 1
+            requestCPU: 6
+            requestMemory: "24Gi"
+            requestGPU: 1
+            pvcStorage: "50Gi"
+            vllmConfig:
+              maxModelLen: 4096
+              dtype: bfloat16
+              gpuMemoryUtilization: 0.9
+              extraArgs:
+              - "--trust-remote-code"
+              - "--limit-mm-per-prompt.image=1"
+      routerSpec:
+        enableRouter: true
+        serviceType: ClusterIP
+        containerPort: 8000
+        servicePort: 80
+  # ----------------------------------------------------------------------------
+  # Milvus — vector DB for the BiomedCLIP X-ray embeddings (standalone + REST v2).
+  # Reachable in-cluster at http://milvus:19530.
+  # ----------------------------------------------------------------------------
+  - chartName: milvus
+    chartRepo: application-collection
+    chartVersion: 5.0.22
+    values:
+      cluster:
+        enabled: false
+      image:
+        all:
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+          repository: containers/milvus
+          tag: 2.6.18-8.4
+      etcd:
+        enabled: true
+        replicaCount: 1
+      kafka:
+        enabled: false
+      minio:
+        enabled: true
+        mode: standalone
+        name: minio
+        replicas: 1
+        rootPath: file
+        users:
+        - accessKey: minioadmin
+          policy: consoleAdmin
+          secretKey: minioadmin
+      proxy:
+        enabled: true
+        http:
+          enabled: true
+      standalone:
+        messageQueue: woodpecker
+        persistence:
+          enabled: true
+          persistentVolumeClaim:
+            accessModes: ReadWriteOnce
+            size: 50Gi
+      streaming:
+        enabled: true
+        woodpecker:
+          embedded: true
+          storage:
+            type: minio
+      service:
+        port: 19530
+        portName: milvus
+        type: ClusterIP

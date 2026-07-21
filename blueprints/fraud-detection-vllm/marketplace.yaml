@@ -6,7 +6,7 @@ description: >-
   behavioural vectors in Milvus for anomaly detection; an LLM served by vLLM on GPU
   (Qwen/Qwen2.5-3B-Instruct) acts as an AML analyst explaining flagged accounts. Requires a
   real GPU node. With thanks to SantanderAI/gen-fraud-graph for the inspiration.
-category: ai-blueprints
+category: anomaly-detection
 tags: [fraud, aml, airflow, xgboost, vllm, milvus, anomaly, gpu]
 blueprintFile: fraud-detection-vllm-1-0-0.yaml
 prerequisites:

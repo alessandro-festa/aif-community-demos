@@ -5,7 +5,7 @@ description: >-
   Collection. A derivation of Astronomer's gen-ai-fine-tune-rag use case: Airflow
   orchestrates knowledge-base ingestion and Ollama model customization; a local
   SUSE-styled UI generates grounded posts via RAG.
-category: ai-blueprints
+category: data-engineering
 tags: [airflow, ollama, milvus, rag]
 blueprintFile: airflow-genai-rag-1-0-0.yaml
 prerequisites:

@@ -126,6 +126,10 @@ input:focus, select:focus, textarea:focus {
 label { display: block; font-size: .72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin: 12px 0 5px; }
 
 /* Cards + grid */
+/* Catalog search bar + topic dropdown filter. */
+.catalog-filters { display: flex; gap: 10px; margin: 12px 0 18px; flex-wrap: wrap; }
+.catalog-filters input { flex: 1 1 260px; max-width: 460px; }
+.catalog-filters select { flex: 0 0 auto; width: auto; min-width: 160px; }
 .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
 .card {
   background: var(--surface); border: 1px solid var(--border);
@@ -159,6 +163,13 @@ h2 { font-size: 1.2rem; margin: 0 0 4px; }
 .check .status { font-weight: 700; }
 .check .status.ok { color: var(--success); }
 .check .status.bad { color: var(--danger); }
+.wizard .wizard-opt { align-items: flex-start; cursor: pointer; }
+.wizard .wizard-opt input { margin-top: 3px; width: 16px; height: 16px; flex: 0 0 auto; }
+/* Free-text / secret wizard inputs (e.g. an HF token). */
+.wizard .wizard-input { display: block; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.wizard .wizard-input:last-child { border-bottom: none; }
+.wizard .wizard-input > input { display: block; width: 100%; margin-top: 8px; }
+.wizard .wizard-input .req { color: var(--danger); font-weight: 700; }
 
 /* Log console */
 pre.log {
@@ -177,13 +188,31 @@ pre.log {
 .stepper .step.active { color: var(--on-accent); background: var(--accent); border-color: var(--accent); font-weight: 700; }
 .stepper .step.done { color: var(--mint); border-color: var(--mint); }
 
-.step-body { font-size: .9rem; line-height: 1.6; }
-.step-body > div { margin: 3px 0; }
+.step-body { font-size: .92rem; line-height: 1.65; }
+.step-body > div { margin: 4px 0; }
 .step-body code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: .85em; }
-.step-body blockquote { margin: 8px 0; padding-left: 10px; border-left: 3px solid var(--border); }
+.step-body blockquote { margin: 10px 0; padding: 6px 0 6px 12px; border-left: 3px solid var(--accent); color: var(--text-muted); }
+/* Section headings inside guide bodies (# / ## / ###). */
+.step-body .guide-h { margin: 16px 0 6px; font-size: .95rem; font-weight: 700; color: var(--text); }
+.step-body .guide-h:first-child { margin-top: 0; }
+/* Fenced code blocks — a boxed, copy-to-clipboard snippet (e.g. test prompts). */
+.codeblock { position: relative; margin: 10px 0; background: var(--log-bg); border: 1px solid var(--border); border-radius: var(--radius); }
+.codeblock pre {
+  margin: 0; padding: 12px 14px; padding-right: 78px;
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .82rem; line-height: 1.55;
+  color: var(--log-fg); white-space: pre-wrap; word-break: break-word;
+}
+.copy-btn {
+  position: absolute; top: 8px; right: 8px; z-index: 1;
+  padding: 3px 12px; font-size: .72rem; font-weight: 700; line-height: 1.4;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--text); cursor: pointer;
+}
+.copy-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--surface); }
+.copy-btn.copied { color: var(--on-accent); background: var(--success); border-color: var(--success); }
 /* Ordered / unordered lists in guide bodies — the linear step-by-step. */
 .guide-list { margin: 8px 0; padding-left: 22px; }
-.guide-list li { margin: 5px 0; }
+.guide-list li { margin: 6px 0; }
 .guide-list li::marker { color: var(--accent); font-weight: 700; }
 .step-nav { display: flex; justify-content: space-between; margin-top: 20px; }
 

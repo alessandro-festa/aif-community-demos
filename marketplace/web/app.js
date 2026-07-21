@@ -6,6 +6,8 @@ const state = {
   settings: null,
   contexts: [],
   catalog: [],
+  catalogQuery: "", // catalog search box text
+  catalogTopic: "", // catalog topic filter ("" = all)
   bp: null,        // selected blueprint
   step: 0,         // guide step index
   namespace: "",
@@ -22,6 +24,11 @@ async function getJSON(url) {
 }
 async function putJSON(url, body) {
   const r = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  return r.json();
+}
+async function postJSON(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
   return r.json();
 }
@@ -55,8 +62,10 @@ async function streamPost(url, body, { onLog, onDone, onError }) {
 }
 
 // Tiny markdown-ish renderer for guide bodies (safe: escapes first).
-// Supports **bold**, `code`, > blockquotes, ordered lists (1. / 2.) and
-// unordered lists (- / *), so guide steps can read as a linear step-by-step.
+// Supports # / ## / ### headings, **bold**, `code`, > blockquotes, ordered
+// lists (1. / 2.), unordered lists (- / *), and ``` fenced code blocks — the
+// latter render as a boxed, copy-to-clipboard snippet (see the .copy-btn handler
+// at boot). Keeps guide steps readable and prompts easy to grab.
 function md(text) {
   const inline = (s) => esc(s)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
@@ -65,11 +74,30 @@ function md(text) {
   const out = [];
   let list = null; // "ol" | "ul" | null
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  let fence = false, fenceBuf = [];
+  const flushFence = () => {
+    out.push(
+      '<div class="codeblock"><button type="button" class="copy-btn" aria-label="Copy to clipboard">Copy</button>' +
+      `<pre><code>${esc(fenceBuf.join("\n"))}</code></pre></div>`
+    );
+    fenceBuf = []; fence = false;
+  };
   for (const raw of lines) {
     const l = raw.trim();
+    // ``` fenced code block -> a boxed, copyable snippet.
+    if (fence) {
+      if (l.startsWith("```")) flushFence();
+      else fenceBuf.push(raw);
+      continue;
+    }
+    if (l.startsWith("```")) { closeList(); fence = true; fenceBuf = []; continue; }
+    const h = l.match(/^(#{1,3})\s+(.*)$/);
     const ol = l.match(/^\d+\.\s+(.*)$/);
     const ul = l.match(/^[-*]\s+(.*)$/);
-    if (ol) {
+    if (h) {
+      closeList();
+      out.push(`<h4 class="guide-h">${inline(h[2])}</h4>`);
+    } else if (ol) {
       if (list !== "ol") { closeList(); out.push('<ol class="guide-list">'); list = "ol"; }
       out.push(`<li>${inline(ol[1])}</li>`);
     } else if (ul) {
@@ -87,6 +115,7 @@ function md(text) {
     }
   }
   closeList();
+  if (fence) flushFence(); // tolerate an unterminated fence
   return out.join("");
 }
 
@@ -200,17 +229,61 @@ async function updateRunningIndicator() {
   if (state.view === "running") refreshRunningList();
 }
 
+// topicLabel prettifies a category slug for a section header (e.g.
+// "anomaly-detection" -> "Anomaly detection").
+function topicLabel(slug) {
+  const s = String(slug || "other").replace(/[-_]+/g, " ").trim();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : "Other";
+}
+
 function renderCatalog() {
   if (!state.catalog.length) {
     app.innerHTML = `<h2>Catalog</h2><p class="muted">No blueprints loaded. Check the git repo in <a href="#" id="to-settings">Settings</a>, or start the binary with <code>--dir ../blueprints</code>.</p>`;
     document.getElementById("to-settings")?.addEventListener("click", (e) => { e.preventDefault(); setView("settings"); });
     return;
   }
-  app.innerHTML = `<h2>Blueprints</h2><p class="muted">Select a blueprint to import it and run a guided demo.</p>
-    <div class="grid">${state.catalog.map(cardHTML).join("")}</div>`;
-  state.catalog.forEach((bp) => {
-    document.getElementById(`bp-${bp.id}`)?.addEventListener("click", () => openBlueprint(bp.id));
-  });
+  // Distinct topics (categories) for the dropdown filter.
+  const topics = [...new Set(state.catalog.map((bp) => bp.category || "other"))].sort();
+  const topicOptions = ['<option value="">All topics</option>']
+    .concat(topics.map((t) =>
+      `<option value="${esc(t)}" ${t === state.catalogTopic ? "selected" : ""}>${esc(topicLabel(t))}</option>`))
+    .join("");
+
+  app.innerHTML = `<h2>Blueprints</h2>
+    <p class="muted">Select a blueprint to import it and run a guided demo.</p>
+    <div class="catalog-filters">
+      <input id="catalog-search" type="search" autocomplete="off"
+        placeholder="Search by name, tag, or topic…" value="${esc(state.catalogQuery || "")}" />
+      <select id="catalog-topic">${topicOptions}</select>
+    </div>
+    <div id="catalog-results"></div>`;
+
+  const renderResults = () => {
+    const q = (state.catalogQuery || "").toLowerCase().trim();
+    const topic = state.catalogTopic || "";
+    const matches = state.catalog.filter((bp) => {
+      if (topic && (bp.category || "other") !== topic) return false;
+      if (!q) return true;
+      const hay = [bp.displayName, bp.description, bp.category, ...(bp.tags || [])]
+        .filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(q);
+    });
+    const results = document.getElementById("catalog-results");
+    if (!matches.length) {
+      results.innerHTML = `<p class="muted">No blueprints match your filters.</p>`;
+      return;
+    }
+    // All matching cards together in one grid (no per-topic sections).
+    results.innerHTML = `<div class="grid">${matches.map(cardHTML).join("")}</div>`;
+    matches.forEach((bp) =>
+      document.getElementById(`bp-${bp.id}`)?.addEventListener("click", () => openBlueprint(bp.id)));
+  };
+
+  const searchEl = document.getElementById("catalog-search");
+  const topicEl = document.getElementById("catalog-topic");
+  searchEl.addEventListener("input", () => { state.catalogQuery = searchEl.value; renderResults(); });
+  topicEl.addEventListener("change", () => { state.catalogTopic = topicEl.value; renderResults(); });
+  renderResults();
 }
 
 function cardHTML(bp) {
@@ -320,9 +393,8 @@ async function wireComponentUI(u) {
   async function poll() {
     if (!document.body.contains(row)) return; // view changed; stop polling
     try {
-      const r = await getJSON(`/api/blueprints/${state.bp.id}/service-status`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ namespace: state.namespace, service: u.service }),
+      const r = await postJSON(`/api/blueprints/${state.bp.id}/service-status`, {
+        namespace: state.namespace, service: u.service,
       });
       if (r.ready) {
         dot.className = "dot ok"; status.textContent = "ready"; btn.disabled = false;
@@ -340,9 +412,8 @@ async function wireComponentUI(u) {
   btn.addEventListener("click", async () => {
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
     try {
-      const r = await getJSON(`/api/blueprints/${state.bp.id}/component-ui/start`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ namespace: state.namespace, name: u.name }),
+      const r = await postJSON(`/api/blueprints/${state.bp.id}/component-ui/start`, {
+        namespace: state.namespace, name: u.name,
       });
       window.open(r.url, "_blank");
       btn.textContent = "Open"; btn.disabled = false;
@@ -366,13 +437,46 @@ function renderAction(step) {
   const bp = state.bp;
 
   if (a.type === "import") {
-    host.innerHTML = `<div class="section"><button class="primary" id="do">Import blueprint (kubectl apply)</button><div class="error" id="err"></div></div>`;
+    // Optional pre-import wizard: a checklist (options) and/or text inputs (e.g. an
+    // HF token) injected into the blueprint CR before apply.
+    const wiz = bp.importWizard;
+    const opts = (wiz && wiz.options) || [];
+    const inputs = (wiz && wiz.inputs) || [];
+    let wizardHTML = "";
+    if (wiz && (opts.length || inputs.length)) {
+      wizardHTML = `<div class="card wizard">
+        <h3>${esc(wiz.title || "Options")}</h3>
+        ${wiz.body ? `<div class="step-body">${md(wiz.body)}</div>` : ""}
+        ${inputs.map((i) => `
+          <label class="wizard-input">
+            <span><strong>${esc(i.label || i.id)}</strong>${i.required ? ' <span class="req">*</span>' : ""}
+            ${i.description ? `<br><span class="muted">${esc(i.description)}</span>` : ""}</span>
+            <input type="${i.secret ? "password" : "text"}" data-input="${esc(i.id)}"
+              placeholder="${esc(i.placeholder || "")}" autocomplete="off" spellcheck="false" />
+          </label>`).join("")}
+        ${opts.map((o) => `
+          <label class="check wizard-opt">
+            <input type="checkbox" data-opt="${esc(o.id)}" ${o.default ? "checked" : ""} />
+            <span><strong>${esc(o.label || o.id)}</strong>
+            ${o.description ? `<br><span class="muted">${esc(o.description)}</span>` : ""}</span>
+          </label>`).join("")}
+      </div>`;
+    }
+    host.innerHTML = `${wizardHTML}<div class="section"><button class="primary" id="do">Import blueprint (kubectl apply)</button><div class="error" id="err"></div></div>`;
     document.getElementById("do").addEventListener("click", (e) => {
+      const err = document.getElementById("err");
+      err.textContent = "";
+      const selections = Array.from(host.querySelectorAll("[data-opt]:checked")).map((c) => c.dataset.opt);
+      const inputVals = {};
+      for (const el of host.querySelectorAll("[data-input]")) inputVals[el.dataset.input] = el.value.trim();
+      // Client-side required check so we don't hit the cluster with a missing token.
+      const missing = inputs.find((i) => i.required && !inputVals[i.id]);
+      if (missing) { err.textContent = `${missing.label || missing.id} is required`; return; }
       e.target.disabled = true; e.target.innerHTML = `<span class="spinner"></span>Importing…`;
-      streamPost(`/api/blueprints/${bp.id}/import`, {}, {
+      streamPost(`/api/blueprints/${bp.id}/import`, { selections, inputs: inputVals }, {
         onLog: logLine,
         onDone: (m) => { logLine("✓ " + m); e.target.disabled = false; e.target.textContent = "Re-import"; markDone(); },
-        onError: (m) => { document.getElementById("err").textContent = m; e.target.disabled = false; e.target.textContent = "Retry import"; },
+        onError: (m) => { err.textContent = m; e.target.disabled = false; e.target.textContent = "Retry import"; },
       });
     });
 
@@ -385,6 +489,7 @@ function renderAction(step) {
       state.namespace = document.getElementById("ns").value.trim();
       document.getElementById("ns-msg").textContent = state.namespace ? `Using namespace "${state.namespace}"` : "Enter a namespace";
       if (state.namespace) markDone();
+      renderComponentUIs();  // refresh the component-access panel with the new namespace
     });
 
   } else if (a.type === "start-frontend") {
@@ -465,6 +570,29 @@ function renderSettings() {
 }
 
 // --- boot ----------------------------------------------------------------- //
+// Copy-to-clipboard for md() fenced code blocks (delegated so it survives the
+// full re-renders render() does). Works on localhost/HTTPS (secure context).
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".copy-btn");
+  if (!btn) return;
+  const code = btn.parentElement.querySelector("code");
+  if (!code) return;
+  const done = (label, ok) => {
+    btn.textContent = label;
+    btn.classList.toggle("copied", ok);
+    setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1500);
+  };
+  try {
+    await navigator.clipboard.writeText(code.textContent);
+    done("Copied!", true);
+  } catch {
+    // Fallback: select the text so the user can hit ⌘/Ctrl-C.
+    const r = document.createRange(); r.selectNodeContents(code);
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    done("Press ⌘C", false);
+  }
+});
+
 document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
 document.getElementById("running-badge").addEventListener("click", () => setView("running"));
 

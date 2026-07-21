@@ -6,7 +6,7 @@ description: >-
   behavioural vectors in Milvus for anomaly detection; a local LLM (Ollama, qwen2.5:3b)
   acts as an AML analyst explaining flagged accounts. All from the SUSE Application
   Collection. With thanks to SantanderAI/gen-fraud-graph for the inspiration.
-category: ai-blueprints
+category: anomaly-detection
 tags: [fraud, aml, airflow, xgboost, ollama, milvus, anomaly]
 blueprintFile: fraud-detection-ollama-1-0-0.yaml
 prerequisites:

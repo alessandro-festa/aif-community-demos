@@ -1,0 +1,87 @@
+id: xray-copilot-ollama
+displayName: Chest X-ray Copilot (Ollama, CPU)
+description: >-
+  Upload a chest X-ray and get an analysis from a medical vision-language model
+  (MedGemma) served by Ollama on CPU, then search a Milvus index of X-rays by image
+  (similarity) or by text (semantic) using BiomedCLIP embeddings. No HuggingFace
+  token needed. Demo only — not for clinical use.
+category: healthcare
+tags: [healthcare, xray, medgemma, ollama, biomedclip, milvus, cpu, vision]
+blueprintFile: xray-copilot-ollama-1-0-0.yaml
+prerequisites:
+  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
+  - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
+  - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
+localFrontend:
+  dir: ui
+  runtime: python
+  install:
+    # CPU-only torch first so open_clip_torch does not pull the CUDA build; then the
+    # rest. Paths are relative to the blueprint root.
+    - "torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu"
+    - "-r ui/requirements.txt"
+  entry: app.main:app
+  port: 8000
+  openPath: /
+  env:
+    OPENAI_BASE_URL: "http://localhost:11434/v1"
+    OPENAI_API_KEY: "EMPTY"
+    DEFAULT_MODEL: "dcarrascosa/medgemma-1.5-4b-it:Q4_K_M"
+    MILVUS_URI: "http://localhost:19530"
+    CLIP_MODEL: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+    IMG_COLLECTION: "xray_embeddings"
+  portForwards:
+    - {name: ollama, service: ollama, local: 11434, remote: 11434}
+    - {name: milvus, service: milvus, local: 19530, remote: 19530}
+guide:
+  - title: Import the blueprint
+    body: |
+      Applies the Chest X-ray Copilot (Ollama) Blueprint CR to the selected cluster.
+      This adds it to the SUSE AI Factory catalog — it does not deploy anything yet.
+      No HuggingFace token is needed (Ollama pulls MedGemma from its own registry).
+    action: {type: import}
+  - title: Create the AIWorkload (SUSE AI Factory UI)
+    body: |
+      In the SUSE AI Factory UI, go to **Blueprints → Chest X-ray Copilot (Ollama,
+      CPU) → Create AIWorkload**, choose a target **namespace**, and deploy. Ollama
+      pulls `alibayram/medgemma` on first start; wait until Ollama and Milvus are
+      Ready. Enter the namespace you chose below.
+    action: {type: namespace-input}
+  - title: Launch the demo UI
+    body: |
+      Starts `kubectl port-forward` to Ollama (`ollama:11434`) and Milvus
+      (`milvus:19530`), then runs the Chest X-ray Copilot UI locally.
+    action: {type: start-frontend}
+  - title: Analyse an X-ray & search
+    body: |
+      Open the UI, pick a bundled **sample X-ray** (normal / lobar pneumonia /
+      congestive heart failure) or upload your own, and hit **Analyse** (CPU
+      inference is slow — give it a moment). Each analysed image is embedded with
+      BiomedCLIP and indexed in Milvus, so **Find similar X-rays** and the semantic
+      search box start returning results once you've analysed a few.
+
+      > The model (`dcarrascosa/medgemma-1.5-4b-it:Q4_K_M`) is a vision-capable
+      > MedGemma build. If you swap in a text-only tag, analysis fails with "missing
+      > data required for image input" — pick a vision (Text+Image) tag instead.
+
+      Try these **semantic search** queries (Copy → paste into the search box):
+
+      ```
+      left lower lobe pneumonia
+      ```
+
+      ```
+      enlarged heart, cardiomegaly
+      ```
+
+      ```
+      normal chest x-ray, clear lung fields
+      ```
+
+      ```
+      pleural effusion
+      ```
+
+      > BiomedCLIP shares one embedding space for images and text, so the same index
+      > answers both image→image similarity and text→image semantic search.
+    action: {type: open-url, url: "http://localhost:8000"}

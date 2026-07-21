@@ -61,6 +61,69 @@ type Action struct {
 	URL  string `yaml:"url" json:"url"`
 }
 
+// WizardOption is one toggleable choice in an import wizard. When selected, its
+// Inject block is deep-merged into the target component's Helm values in the
+// Blueprint CR before it is applied (maps merge recursively, lists append).
+type WizardOption struct {
+	ID          string         `yaml:"id" json:"id"`
+	Label       string         `yaml:"label" json:"label"`
+	Description string         `yaml:"description" json:"description"`
+	Default     bool           `yaml:"default" json:"default"`
+	Inject      map[string]any `yaml:"inject" json:"inject"`
+}
+
+// WizardInput is a free-text/secret value the import wizard collects before apply
+// (e.g. a HuggingFace token needed to pull a gated model). The entered value is
+// substituted for the "{{value}}" placeholder wherever it appears in Inject's
+// string values, and the result is deep-merged into the target component — so the
+// value flows into the Blueprint CR at import time (before AI Factory sees it).
+type WizardInput struct {
+	ID          string         `yaml:"id" json:"id"`
+	Label       string         `yaml:"label" json:"label"`
+	Description string         `yaml:"description" json:"description"`
+	Placeholder string         `yaml:"placeholder" json:"placeholder"`
+	Secret      bool           `yaml:"secret" json:"secret"`     // render as a password field
+	Required    bool           `yaml:"required" json:"required"` // block import if empty
+	Inject      map[string]any `yaml:"inject" json:"inject"`
+	// Replace, when set, is a placeholder string replaced by the entered value
+	// everywhere in the rendered CR — the way to fill a value inside a list item
+	// (e.g. a per-model hf_token) where a deep-merge can't reach. json:"-" so the
+	// placeholder token is never shipped to the browser.
+	Replace string `yaml:"replace" json:"-"`
+}
+
+// ImportWizard, when present on a blueprint, makes the import guide step show a
+// checklist (Options) and/or a set of text inputs (Inputs). Each selected option's
+// Inject and each filled input's (substituted) Inject are merged into the values of
+// the spec.components entry whose chartName == TargetComponent.
+type ImportWizard struct {
+	Title           string         `yaml:"title" json:"title"`
+	Body            string         `yaml:"body" json:"body"`
+	TargetComponent string         `yaml:"targetComponent" json:"targetComponent"`
+	Options         []WizardOption `yaml:"options" json:"options"`
+	Inputs          []WizardInput  `yaml:"inputs" json:"inputs,omitempty"`
+}
+
+// Option returns the wizard option with the given id.
+func (w *ImportWizard) Option(id string) (WizardOption, bool) {
+	for _, o := range w.Options {
+		if o.ID == id {
+			return o, true
+		}
+	}
+	return WizardOption{}, false
+}
+
+// Input returns the wizard input with the given id.
+func (w *ImportWizard) Input(id string) (WizardInput, bool) {
+	for _, in := range w.Inputs {
+		if in.ID == id {
+			return in, true
+		}
+	}
+	return WizardInput{}, false
+}
+
 // GuideStep is one page of the step-by-step demo.
 type GuideStep struct {
 	Title  string  `yaml:"title" json:"title"`
@@ -79,6 +142,7 @@ type Blueprint struct {
 	Prerequisites []Prerequisite `yaml:"prerequisites" json:"prerequisites"`
 	LocalFrontend *LocalFrontend `yaml:"localFrontend" json:"localFrontend,omitempty"`
 	ComponentUIs  []ComponentUI  `yaml:"componentUIs" json:"componentUIs,omitempty"`
+	ImportWizard  *ImportWizard  `yaml:"importWizard" json:"importWizard,omitempty"`
 	Guide         []GuideStep    `yaml:"guide" json:"guide"`
 
 	// Dir is the absolute path to this blueprint's folder in the checkout

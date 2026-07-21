@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"math/rand"
 	"net"
 	"os"
 	"os/exec"
@@ -19,6 +20,32 @@ import (
 
 	"github.com/suse/blueprint-marketplace/internal/catalog"
 )
+
+// Local port-forward ports are picked at random from this range so they never
+// collide with whatever the configured local port (e.g. 8080) happens to clash
+// with on the host. The range is high and narrow to stay clear of common dev
+// ports while remaining easy to recognize as marketplace-managed forwards.
+const (
+	pfPortMin = 32001
+	pfPortMax = 32999
+)
+
+// freeLocalPort returns a currently-free TCP port on 127.0.0.1 within
+// [pfPortMin, pfPortMax]. It probes random ports in the range and returns the
+// first one it can bind. There is an inherent TOCTOU gap between this check and
+// the consumer binding the port, but for local single-user dev that is fine.
+func freeLocalPort() (int, error) {
+	for range 100 {
+		p := pfPortMin + rand.Intn(pfPortMax-pfPortMin+1)
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if err != nil {
+			continue // in use; try another
+		}
+		_ = ln.Close()
+		return p, nil
+	}
+	return 0, fmt.Errorf("no free local port found in %d-%d", pfPortMin, pfPortMax)
+}
 
 // groupKill makes a command run in its own process group and, when its context
 // is cancelled, SIGKILL the whole group. This is essential because `kubectl` is
@@ -150,6 +177,16 @@ func (m *Manager) StartPortFwd(blueprint, kubeCtx, namespace, path string, pf ca
 		return nil, fmt.Errorf("namespace is required")
 	}
 	m.StopPortFwd(blueprint, pf.Name)
+
+	// Always bind a random, known-free local port instead of the configured one
+	// (pf.Local) so component-UI forwards can't collide with other services on
+	// the host. The chosen port flows into both the kubectl port-forward spec and
+	// the URL returned to the browser, so the caller never needs the fixed port.
+	local, err := freeLocalPort()
+	if err != nil {
+		return nil, err
+	}
+	pf.Local = local
 
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := newLogHub() // internal only

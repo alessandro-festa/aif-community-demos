@@ -17,6 +17,9 @@ small local demo UI and a step-by-step guide.
 | **SUSE VSC (Video Search & Summarization)** | [`blueprints/suse-vss`](blueprints/suse-vss) | CPU | All-SUSE, non-NVIDIA Video Search & Summarization. Ollama serves `moondream:1.8b` (multimodal) and Milvus stores each frame's CLIP embedding. Local SUSE-styled UI: ingest a video by URL / upload / webcam / YouTube / RTSP, run a prompt, and search past frames by text. |
 | **VisionGPT (Ollama)** | [`blueprints/visiongpt-ollama`](blueprints/visiongpt-ollama) | CPU | LLM-assisted navigation hazard detection (a SUSE derivation of AIS-Clemson's VisionGPT). Ollama serves Qwen2.5-VL (`qwen2.5vl:3b`); a local UI samples frames from a walking video and returns a per-frame danger score + short reason at a selectable sensitivity. |
 | **VisionGPT (vLLM)** | [`blueprints/visiongpt-vllm`](blueprints/visiongpt-vllm) | **GPU** | Same VisionGPT hazard detection as above, but `Qwen/Qwen2.5-VL-3B-Instruct` is served by vLLM on an NVIDIA GPU. Requires a real GPU node + GPU Operator. |
+| **LiteLLM Guardrails (Ollama + Open WebUI)** | [`blueprints/litellm-guardrails`](blueprints/litellm-guardrails) | CPU | A guarded LLM gateway: Open WebUI → a LiteLLM proxy that applies guardrails (Presidio PII masking/blocking, secret redaction, prompt-injection detection) → Ollama (`llama3.2:1b`). Pick the guardrails in a pre-import wizard; they're injected into the LiteLLM config at import time. |
+| **Chest X-ray Copilot (Ollama)** | [`blueprints/xray-copilot-ollama`](blueprints/xray-copilot-ollama) | CPU | **Healthcare** imaging demo: analyse a chest X-ray with a medical vision LLM (MedGemma via Ollama) and search a Milvus index of X-rays by image (similarity) or text (semantic) using BiomedCLIP embeddings. Demo only — not for clinical use. |
+| **Chest X-ray Copilot (vLLM)** | [`blueprints/xray-copilot-vllm`](blueprints/xray-copilot-vllm) | **GPU** | Same X-ray analysis + search, with **LLaVA-Med 7B** (baseline) and optional **MedGemma 1.5 4B** served by vLLM. The import wizard collects a HuggingFace token for the gated MedGemma model. Demo only — not for clinical use. |
 
 Every blueprint folder contains:
 - `*-<version>.yaml` — the Blueprint CR to `kubectl apply`;
@@ -28,9 +31,24 @@ Every blueprint folder contains:
 ## Blueprint Marketplace
 
 [`marketplace/`](marketplace) is a single Go binary that pulls this repo, lists the
-blueprints, lets you pick a kube context (showing SUSE AI Factory readiness), imports a
-blueprint via `kubectl`, and walks you through the guided demo — starting each blueprint's
-local frontend + `kubectl port-forward`s.
+blueprints (**search + topic filter**), lets you pick a kube context (showing SUSE AI
+Factory readiness), imports a blueprint via `kubectl` — with an optional **pre-import
+wizard** (toggle options and enter secrets such as a HuggingFace token, injected into the
+Blueprint CR before apply) — and walks you through the guided demo, starting each
+blueprint's local frontend + `kubectl port-forward`s.
+
+Prebuilt binaries are attached to each
+[release](https://github.com/alessandro-festa/aif-community-demos/releases):
+
+```bash
+# pick the asset for your platform (darwin/linux, amd64/arm64):
+curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.2.0/bpm-linux-amd64
+curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.2.0/SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing && chmod +x bpm-linux-amd64
+./bpm-linux-amd64   # open http://127.0.0.1:8900
+```
+
+Or build from source:
 
 ```bash
 cd marketplace
@@ -47,6 +65,6 @@ Host prerequisites: `kubectl`, `git`, `python3`. See [`marketplace/README.md`](m
 - SUSE AI Factory operator installed;
 - the `application-collection` ClusterRepo + credentials secret;
 - a default StorageClass and cert-manager;
-- for the **GPU blueprints** (Fraud/vLLM, VisionGPT/vLLM): the NVIDIA **GPU Operator** and a node with a real NVIDIA GPU.
+- for the **GPU blueprints** (Fraud/vLLM, VisionGPT/vLLM, X-ray Copilot/vLLM): the NVIDIA **GPU Operator** and a node with a real NVIDIA GPU.
 
 Import a blueprint, then create an **AIWorkload** from it in the SUSE AI Factory UI to deploy it.
