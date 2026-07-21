@@ -268,7 +268,7 @@ def generate_dataset():
             estimated = round(random.uniform(200, float(pol[4]) * 1.2), 2)
             deductible = float(pol[5])
             limit = float(pol[4])
-            in_dates = pol[7] <= incident <= pol[9]
+            in_dates = pol[7] <= incident <= pol[8]  # pol[7]=start_date, pol[8]=end_date
             within_policy = bool(covered and in_dates and estimated <= limit)
             was_paid = bool(within_policy and estimated > deductible and random.random() > 0.08)
             paid = round(min(estimated, limit) - deductible, 2) if was_paid else 0.0

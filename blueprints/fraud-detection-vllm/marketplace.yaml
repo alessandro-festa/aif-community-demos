@@ -53,8 +53,8 @@ guide:
   - title: Run the pipeline in Airflow
     body: |
       Use the **Open Airflow UI** button below (enabled once Airflow is Ready) to reach the
-      Airflow web UI. Then trigger these DAGs **in order**, waiting for each to finish before
-      starting the next:
+      Airflow web UI (log in with **admin / admin**). Then trigger these DAGs **in order**,
+      waiting for each to finish before starting the next:
 
       1. `generate_fraud_dataset` — synthetic fraud graph → PostgreSQL.
       2. `engineer_and_train` — features → XGBoost → account scores + model metrics.

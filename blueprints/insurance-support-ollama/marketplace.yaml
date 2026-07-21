@@ -73,8 +73,8 @@ guide:
     action: {type: namespace-input}
   - title: Run the Airflow pipeline
     body: |
-      Open the **Airflow UI** (button below, enabled once Ready) and trigger the DAGs
-      in order:
+      Open the **Airflow UI** (button below, enabled once Ready) and log in with
+      **admin / admin**, then trigger the DAGs in order:
 
       1. **generate_dataset** — synthesises the insurance data into Postgres.
       2. **index_cases** — embeds resolved/closed tickets into Milvus (semantic search).

@@ -49,7 +49,8 @@ guide:
   - title: Run the pipeline in Airflow
     body: |
       Use the **Open Airflow UI** button below (enabled once Airflow is Ready) to reach the
-      Airflow web UI. Then trigger these DAGs **in order**, waiting for each to finish:
+      Airflow web UI (log in with **admin / admin**). Then trigger these DAGs **in order**,
+      waiting for each to finish:
 
       1. `ingest_knowledge_base` — embeds the knowledge base into Milvus.
       2. `customize_model` — builds the customized `astra-custom` model on Ollama.
