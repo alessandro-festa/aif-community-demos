@@ -1,0 +1,37 @@
+/* Insurance Support Copilot — extras on top of suse.css. */
+
+/* Chat transcript */
+.chat { display: flex; flex-direction: column; gap: 10px; max-height: 420px; overflow-y: auto; padding: 4px 2px; }
+.bubble { max-width: 88%; padding: 9px 12px; border-radius: 10px; font-size: .9rem; line-height: 1.5; }
+.bubble p { margin: 4px 0; }
+.bubble.user { align-self: flex-end; background: var(--accent); color: var(--on-accent, #1a1006); border-bottom-right-radius: 3px; }
+.bubble.assistant { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--border); border-bottom-left-radius: 3px; }
+.bubble h4 { margin: 8px 0 3px; font-size: .9rem; }
+.bubble code { background: rgba(0,0,0,.25); padding: 1px 5px; border-radius: 4px; font-size: .85em; }
+
+/* Composer */
+.composer { display: flex; gap: 8px; align-items: flex-end; margin-top: 12px; }
+.composer textarea { min-height: 44px; }
+.composer-actions { display: flex; gap: 6px; align-items: center; }
+.composer .primary { margin-top: 0; }
+.attach { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px;
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer; background: var(--bg); font-size: 1.1rem; }
+.attach:hover { border-color: var(--accent); }
+
+/* Proposed-action / confirm card inside a bubble */
+.action { display: flex; flex-direction: column; gap: 8px; }
+.action .args { margin: 0; padding: 8px 10px; background: var(--log-bg, #061210); color: var(--log-fg, #c9d9d1);
+  border-radius: 6px; font-size: .78rem; white-space: pre-wrap; word-break: break-word; }
+.action button { max-width: 160px; }
+.action button + button { margin-top: 0; }
+
+/* Similar cases */
+.case { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.case-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 4px; }
+.case .score { color: var(--mint); font-size: .72rem; }
+.case .res { margin-top: 6px; color: var(--text-muted); font-size: .85rem; border-left: 3px solid var(--accent); padding-left: 8px; }
+
+/* Recent tickets list */
+.tick { padding: 5px 0; border-bottom: 1px solid var(--border); font-size: .85rem; }
+.tick:last-child { border-bottom: none; }
+.tick .tid { color: var(--mint); font-weight: 700; margin-right: 4px; }

@@ -1,0 +1,228 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: insurance-support-vllm
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: insurance-support-vllm-1-0-0
+# Insurance Customer-Support Copilot (vLLM, GPU).
+# Same as the Ollama variant, but the chat + accident-photo vision model
+# (Qwen/Qwen2.5-VL-7B-Instruct) is served by vLLM on an NVIDIA GPU. A small CPU
+# Ollama serves nomic-embed-text for the semantic index (embeddings). Airflow
+# generates a synthetic insurance support dataset into Postgres + Milvus; a local
+# SUSE chat UI opens/closes tickets and suggests similar cases, redacted (Presidio).
+# Requires a real NVIDIA GPU node + the GPU Operator. DEMO ONLY — synthetic data.
+spec:
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
+  displayName: Insurance Support Copilot (vLLM, GPU)
+  version: 1.0.0
+  description: |
+    A customer-support automation demo for an insurance company (GPU variant).
+    Apache Airflow generates a synthetic support dataset — customers with family
+    relationships, policies, accident types, claims (with derived paid / within-policy
+    decisions), and support tickets — into PostgreSQL, then embeds the tickets into
+    Milvus for semantic "similar case" search. A local SUSE-styled chat UI lets a
+    customer upload an accident photo, describe the issue, open or close tickets (the
+    assistant proposes, the user confirms), and see similar past cases — REDACTED with
+    Presidio before display.
+
+    vLLM serves Qwen2.5-VL-7B-Instruct (chat + accident-photo vision) on an NVIDIA GPU;
+    a small CPU Ollama serves nomic-embed-text for the embeddings. CLIP image similarity
+    runs on CPU in the local UI. The support-agent persona is applied as a system prompt
+    (no Ollama model-customization DAG in this variant).
+
+    Prerequisites: the SUSE AI Factory operator, the application-collection ClusterRepo
+    (+ credentials secret), a default StorageClass, cert-manager, and a node with a real
+    NVIDIA GPU + the GPU Operator. After importing, create an AIWorkload, run the DAGs
+    (generate_dataset → index_cases), then launch the local UI. DEMO ONLY — synthetic
+    data; Presidio redaction is best-effort, not a guarantee.
+  components:
+  # ----------------------------------------------------------------------- #
+  # PostgreSQL — customers / families / policies / claims / support tickets.
+  # ----------------------------------------------------------------------- #
+  - chartName: postgresql
+    chartRepo: application-collection
+    chartVersion: 0.6.0
+    values:
+      fullnameOverride: support-db
+      image:
+        registry: dp.apps.rancher.io
+        repository: containers/postgresql
+      auth:
+        database: insurance
+        username: insurance
+        password: insurance
+        postgresPassword: insuranceadmin
+      primary:
+        persistence:
+          enabled: true
+          size: 8Gi
+  # ----------------------------------------------------------------------- #
+  # Milvus — semantic "similar case" index (standalone + REST v2 proxy).
+  # ----------------------------------------------------------------------- #
+  - chartName: milvus
+    chartRepo: application-collection
+    chartVersion: 5.0.22
+    values:
+      cluster:
+        enabled: false
+      image:
+        all:
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+          repository: containers/milvus
+          tag: 2.6.18-8.4
+      etcd:
+        enabled: true
+        replicaCount: 1
+      kafka:
+        enabled: false
+      minio:
+        enabled: true
+        mode: standalone
+        name: minio
+        replicas: 1
+        rootPath: file
+        users:
+        - accessKey: minioadmin
+          policy: consoleAdmin
+          secretKey: minioadmin
+      proxy:
+        enabled: true
+        http:
+          enabled: true
+      standalone:
+        messageQueue: woodpecker
+        persistence:
+          enabled: true
+          persistentVolumeClaim:
+            accessModes: ReadWriteOnce
+            size: 50Gi
+      streaming:
+        enabled: true
+        woodpecker:
+          embedded: true
+          storage:
+            type: minio
+      service:
+        port: 19530
+        portName: milvus
+        type: ClusterIP
+  # ----------------------------------------------------------------------- #
+  # vLLM — chat + accident-photo vision (Qwen2.5-VL-7B), on GPU.
+  # Reachable via the OpenAI-compatible router at vllm-router-service:80.
+  # ----------------------------------------------------------------------- #
+  - chartName: vllm
+    chartRepo: application-collection
+    chartVersion: 0.1.10
+    values:
+      servingEngineSpec:
+        runtimeClassName: nvidia
+        modelSpec:
+          - name: qwen25-vl-7b
+            registry: dp.apps.rancher.io
+            repository: containers/vllm-openai
+            tag: "0.19.0-5.29"
+            modelURL: Qwen/Qwen2.5-VL-7B-Instruct
+            replicaCount: 1
+            requestCPU: 6
+            requestMemory: "24Gi"
+            requestGPU: 1
+            pvcStorage: "60Gi"
+            vllmConfig:
+              maxModelLen: 32768
+              dtype: bfloat16
+              gpuMemoryUtilization: 0.9
+              extraArgs:
+              - "--trust-remote-code"
+              - "--limit-mm-per-prompt.image=2"
+      routerSpec:
+        enableRouter: true
+        serviceType: ClusterIP
+        containerPort: 8000
+        servicePort: 80
+  # ----------------------------------------------------------------------- #
+  # Ollama (CPU) — embeddings only (nomic-embed-text) for the semantic index.
+  # Kept separate from vLLM so the OpenAI /v1/embeddings path is identical to the
+  # Ollama variant. Reachable at http://ollama:11434.
+  # ----------------------------------------------------------------------- #
+  - chartName: ollama
+    chartRepo: application-collection
+    chartVersion: 1.55.0
+    values:
+      fullnameOverride: ollama
+      image:
+        pullPolicy: IfNotPresent
+        registry: dp.apps.rancher.io
+        repository: containers/ollama
+        tag: 0.21.2-11.48
+      ollama:
+        gpu:
+          enabled: false
+          draEnabled: false
+        models:
+          pull:
+          - nomic-embed-text
+        port: 11434
+      persistentVolume:
+        enabled: true
+        accessModes:
+        - ReadWriteOnce
+        size: 10Gi
+      service:
+        port: 11434
+        type: ClusterIP
+  # ----------------------------------------------------------------------- #
+  # Apache Airflow — generate_dataset → index_cases. DAGs via git-sync.
+  # ----------------------------------------------------------------------- #
+  - chartName: apache-airflow
+    chartRepo: application-collection
+    chartVersion: 1.22.0
+    values:
+      executor: LocalExecutor
+      fernetKey: "Nv3aCd-3agJbJG1QxzKMezX5pJZB4fRpZIrqhdS-MA4="
+      jwtSecret: "72873f21d1682ddc023f0815344d1cdc0157e59c9c5480bcb430686d6ed466d3"
+      webserverSecretKey: "bb3ea2e3f0a3ad96a2f440ab3ca4e3406985aaf72182662ebd339f53a7a28a7a"
+      redis:
+        enabled: false
+      flower:
+        enabled: false
+      # Stock SUSE Application Collection Airflow image — no custom image needed
+      # (DAGs use only stdlib + psycopg2, which already ships in this image).
+      images:
+        airflow:
+          repository: containers/apache-airflow
+          tag: 3.2.2-8.14
+          registry: dp.apps.rancher.io
+          pullPolicy: IfNotPresent
+      dags:
+        gitSync:
+          enabled: true
+          repo: https://github.com/alessandro-festa/aif-community-demos.git
+          branch: main
+          ref: main
+          rev: HEAD
+          depth: 1
+          subPath: blueprints/insurance-support-vllm/dags
+          period: 30s
+      env:
+      - name: POSTGRES_URI
+        value: postgresql://insurance:insurance@support-db:5432/insurance
+      - name: MILVUS_URI
+        value: http://milvus:19530
+      - name: EMBED_BASE_URL
+        value: http://ollama:11434/v1
+      - name: EMBED_MODEL
+        value: nomic-embed-text
+      - name: N_TICKETS
+        value: "{{N_TICKETS}}"
+      ingress:
+        apiServer:
+          enabled: true
+          ingressClassName: nginx
+          annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          hosts:
+          - name: insurance-support-airflow
+            tls:
+              enabled: true

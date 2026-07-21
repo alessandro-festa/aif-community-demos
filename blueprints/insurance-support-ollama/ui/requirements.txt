@@ -1,0 +1,16 @@
+setuptools<80  # provides pkg_resources for some deps
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+requests==2.32.3
+psycopg2-binary==2.9.10
+Pillow>=10.4
+numpy==2.2.1
+# CLIP image embeddings for photo similarity search (CPU). torch is installed
+# separately from the CPU wheel index (see marketplace.yaml install order /
+# Dockerfile) to avoid the multi-GB CUDA build.
+sentence-transformers>=3.0,<6
+# PII redaction of retrieved similar cases before display.
+presidio-analyzer>=2.2
+presidio-anonymizer>=2.2
+spacy>=3.7,<4

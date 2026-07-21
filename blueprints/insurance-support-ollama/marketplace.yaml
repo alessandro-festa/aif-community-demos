@@ -1,0 +1,111 @@
+id: insurance-support-ollama
+displayName: Insurance Support Copilot (Ollama, CPU)
+description: >-
+  A customer-support automation demo for an insurance company. Airflow generates a
+  synthetic support dataset (customers, families, policies, claims, tickets) into
+  Postgres and a Milvus semantic index; a local chat UI lets a customer upload an
+  accident photo, open/close tickets, and see similar past cases — redacted (PII
+  removed) with Presidio. Chat + vision via Ollama (qwen2.5vl). Demo only.
+category: customer-support
+tags: [customer-support, insurance, chatbot, airflow, postgres, milvus, presidio, ollama, cpu]
+blueprintFile: insurance-support-ollama-1-0-0.yaml
+prerequisites:
+  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
+  - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
+  - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
+# Optional pre-import wizard: choose how many synthetic tickets Airflow generates.
+importWizard:
+  title: "Synthetic dataset size"
+  body: >-
+    Choose how many synthetic support tickets the Airflow `generate_dataset` DAG
+    creates. Larger sets make "similar case" search richer but take longer to
+    generate and embed. Leave blank for the default (400).
+  targetComponent: apache-airflow
+  inputs:
+    - id: n-tickets
+      label: "Number of synthetic tickets"
+      description: "Injected as the Airflow N_TICKETS env. Default 400 if left blank."
+      placeholder: "400"
+      secret: false
+      required: false
+      replace: "{{N_TICKETS}}"
+componentUIs:
+  - {name: airflow, label: "Airflow UI", service: apache-airflow-api-server, port: 8080, path: /}
+localFrontend:
+  dir: ui
+  runtime: python
+  install:
+    # CPU-only torch first (for sentence-transformers CLIP), then the rest, then the
+    # small spaCy model Presidio uses. Paths are relative to the blueprint root.
+    - "torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu"
+    - "-r ui/requirements.txt"
+    - "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+  entry: app.main:app
+  port: 8000
+  openPath: /
+  env:
+    CHAT_BASE_URL: "http://localhost:11434/v1"
+    CHAT_MODEL: ""
+    EMBED_BASE_URL: "http://localhost:11434/v1"
+    EMBED_MODEL: "nomic-embed-text"
+    OPENAI_API_KEY: "EMPTY"
+    MILVUS_URI: "http://localhost:19530"
+    POSTGRES_URI: "postgresql://insurance:insurance@localhost:5433/insurance"
+    CASES_COLLECTION: "support_cases"
+    CLIP_MODEL: "clip-ViT-B-32"
+  portForwards:
+    - {name: ollama,     service: ollama,     local: 11434, remote: 11434}
+    - {name: milvus,     service: milvus,     local: 19530, remote: 19530}
+    - {name: support-db, service: support-db, local: 5433,  remote: 5432}
+guide:
+  - title: Choose dataset size & import
+    body: |
+      Optionally set the **number of synthetic tickets**, then import. **Importing**
+      applies the Blueprint CR to the selected cluster — it adds the Blueprint to the
+      SUSE AI Factory catalog, it does not deploy anything yet.
+    action: {type: import}
+  - title: Create the AIWorkload (SUSE AI Factory UI)
+    body: |
+      In the SUSE AI Factory UI, go to **Blueprints → Insurance Support Copilot
+      (Ollama, CPU) → Create AIWorkload**, choose a target **namespace**, and deploy.
+      Wait for Postgres, Milvus, Ollama (it pulls `qwen2.5vl:7b` + `nomic-embed-text`
+      on first start — several GB), and Airflow to be Ready. Enter the namespace below.
+    action: {type: namespace-input}
+  - title: Run the Airflow pipeline
+    body: |
+      Open the **Airflow UI** (button below, enabled once Ready) and trigger the DAGs
+      in order:
+
+      1. **generate_dataset** — synthesises the insurance data into Postgres.
+      2. **index_cases** — embeds resolved/closed tickets into Milvus (semantic search).
+      3. **customize_model** — creates the `support-agent` persona model in Ollama.
+
+      Wait for each to finish (green) before the next.
+  - title: Launch the demo UI
+    body: |
+      Starts `kubectl port-forward` to Ollama, Milvus, and Postgres, then runs the
+      Insurance Support Copilot UI locally. First run installs a CPU build of
+      torch + sentence-transformers + Presidio (a few minutes).
+    action: {type: start-frontend}
+  - title: Chat, open a ticket & find similar cases
+    body: |
+      Open the UI and try the assistant. Attach an accident photo with the 📎 button,
+      describe what happened, and ask it to open a ticket — it proposes the action and
+      you **confirm** it (which writes to Postgres). Use the semantic search box or ask
+      for "similar cases"; every retrieved case is **redacted** (names, emails, phones,
+      policy/claim numbers removed) before it's shown.
+
+      Try these (Copy → paste into the chat or search box):
+
+      ```
+      A stone cracked my windshield on the motorway. Can I claim for a repair?
+      ```
+
+      ```
+      A burst pipe flooded my kitchen last night — please open a high priority ticket.
+      ```
+
+      ```
+      water damage claim that was paid
+      ```
+    action: {type: open-url, url: "http://localhost:8000"}

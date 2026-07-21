@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Insurance Support Copilot</title>
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/suse.css" />
+  <link rel="stylesheet" href="/support.css" />
+</head>
+<body>
+  <header>
+    <img src="/favicon.svg" alt="SUSE" />
+    <h1>Insurance Support Copilot</h1>
+    <span class="tag">demo · synthetic data · PII-redacted cases</span>
+  </header>
+
+  <main>
+    <!-- Sidebar: tools + tickets -->
+    <section class="card">
+      <h2>Assistant model</h2>
+      <select id="model"></select>
+      <div id="model-status" class="muted"></div>
+
+      <h2 style="margin-top:18px">Open a ticket</h2>
+      <label>Subject</label>
+      <input id="t-subject" placeholder="e.g. Windshield crack" />
+      <label>Description</label>
+      <textarea id="t-body" placeholder="Describe the issue"></textarea>
+      <label>Priority</label>
+      <select id="t-priority">
+        <option>low</option><option selected>medium</option><option>high</option><option>urgent</option>
+      </select>
+      <button class="primary" id="t-create">Open ticket</button>
+
+      <h2 style="margin-top:18px">Close a ticket</h2>
+      <div class="row">
+        <input id="c-id" type="number" placeholder="Ticket #" />
+        <button id="c-close" style="max-width:100px;margin-top:0">Close</button>
+      </div>
+      <input id="c-notes" placeholder="Resolution notes" style="margin-top:8px" />
+
+      <h2 style="margin-top:18px">Recent tickets</h2>
+      <div id="tickets" class="muted">—</div>
+      <div id="side-msg" class="muted"></div>
+    </section>
+
+    <!-- Chat + cases -->
+    <section>
+      <div class="card section">
+        <h2>Chat</h2>
+        <div id="chat" class="chat"></div>
+        <div id="attach-name" class="muted"></div>
+        <div class="composer">
+          <textarea id="msg" placeholder="Describe your issue, or ask to open/close a ticket…"></textarea>
+          <div class="composer-actions">
+            <label class="attach" title="Attach an accident photo">📎<input id="file" type="file" accept="image/*" hidden /></label>
+            <button class="primary" id="send">Send</button>
+          </div>
+        </div>
+        <div id="chat-error" class="error"></div>
+      </div>
+
+      <div class="card section">
+        <h2>Similar past cases (redacted)</h2>
+        <div class="row">
+          <input id="query" placeholder="Semantic search, e.g. 'burst pipe water damage'" />
+          <button class="primary" id="search" style="margin-top:0;max-width:120px">Search</button>
+        </div>
+        <div id="cases" class="muted">Similar cases suggested by the assistant appear here, with personal details removed.</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

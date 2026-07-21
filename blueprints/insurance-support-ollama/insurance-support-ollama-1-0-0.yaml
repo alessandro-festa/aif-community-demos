@@ -1,0 +1,208 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: insurance-support-ollama
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: insurance-support-ollama-1-0-0
+# Insurance Customer-Support Copilot (Ollama, CPU).
+# Airflow generates a SYNTHETIC insurance support dataset (customers/families/policies/
+# claims/tickets) into PostgreSQL and embeds the tickets into Milvus; a local SUSE chat
+# UI lets a customer upload an accident photo, chat with a support-agent persona, open/
+# close tickets, and see SIMILAR past cases — redacted (PII removed) with Presidio.
+# Ollama serves qwen2.5vl:7b (chat + vision) and nomic-embed-text (semantic index).
+# All components from the SUSE Application Collection. DEMO ONLY — synthetic data.
+spec:
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
+  displayName: Insurance Support Copilot (Ollama, CPU)
+  version: 1.0.0
+  description: |
+    A customer-support automation demo for an insurance company. Apache Airflow
+    generates a synthetic support dataset — customers with family relationships,
+    policies, accident types, claims (with derived paid / within-policy decisions),
+    and support tickets — into PostgreSQL, then embeds the tickets into Milvus for
+    semantic "similar case" search. A local SUSE-styled chat UI lets a customer
+    upload an accident photo, describe the issue, open or close support tickets
+    (the assistant proposes the action, the user confirms), and see similar past
+    cases — every retrieved case is REDACTED with Presidio before display so one
+    customer never sees another's personal data.
+
+    Ollama serves qwen2.5vl:7b (chat + accident-photo vision) and nomic-embed-text
+    (semantic index); CLIP image similarity runs on CPU in the local UI. The Airflow
+    `customize_model` DAG creates a `support-agent` persona model.
+
+    Prerequisites: the SUSE AI Factory operator, the application-collection ClusterRepo
+    (+ credentials secret), a default StorageClass, and cert-manager. After importing,
+    create an AIWorkload, run the DAGs (generate_dataset → index_cases → customize_model),
+    then launch the local UI from the guide. Dataset size is controlled by N_TICKETS.
+    DEMO ONLY — synthetic data; Presidio redaction is best-effort, not a guarantee.
+  components:
+  # ----------------------------------------------------------------------- #
+  # PostgreSQL — customers / families / policies / claims / support tickets.
+  # ----------------------------------------------------------------------- #
+  - chartName: postgresql
+    chartRepo: application-collection
+    chartVersion: 0.6.0
+    values:
+      fullnameOverride: support-db
+      image:
+        registry: dp.apps.rancher.io
+        repository: containers/postgresql
+      auth:
+        database: insurance
+        username: insurance
+        password: insurance
+        postgresPassword: insuranceadmin
+      primary:
+        persistence:
+          enabled: true
+          size: 8Gi
+  # ----------------------------------------------------------------------- #
+  # Milvus — semantic "similar case" index (standalone + REST v2 proxy).
+  # ----------------------------------------------------------------------- #
+  - chartName: milvus
+    chartRepo: application-collection
+    chartVersion: 5.0.22
+    values:
+      cluster:
+        enabled: false
+      image:
+        all:
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+          repository: containers/milvus
+          tag: 2.6.18-8.4
+      etcd:
+        enabled: true
+        replicaCount: 1
+      kafka:
+        enabled: false
+      minio:
+        enabled: true
+        mode: standalone
+        name: minio
+        replicas: 1
+        rootPath: file
+        users:
+        - accessKey: minioadmin
+          policy: consoleAdmin
+          secretKey: minioadmin
+      proxy:
+        enabled: true
+        http:
+          enabled: true
+      standalone:
+        messageQueue: woodpecker
+        persistence:
+          enabled: true
+          persistentVolumeClaim:
+            accessModes: ReadWriteOnce
+            size: 50Gi
+      streaming:
+        enabled: true
+        woodpecker:
+          embedded: true
+          storage:
+            type: minio
+      service:
+        port: 19530
+        portName: milvus
+        type: ClusterIP
+  # ----------------------------------------------------------------------- #
+  # Ollama — chat + vision (qwen2.5vl:7b) and embeddings (nomic-embed-text), CPU.
+  # ----------------------------------------------------------------------- #
+  - chartName: ollama
+    chartRepo: application-collection
+    chartVersion: 1.55.0
+    values:
+      fullnameOverride: ollama
+      image:
+        pullPolicy: IfNotPresent
+        registry: dp.apps.rancher.io
+        repository: containers/ollama
+        tag: 0.21.2-11.48
+      ollama:
+        gpu:
+          enabled: false
+          draEnabled: false
+        models:
+          pull:
+          - qwen2.5vl:7b
+          - nomic-embed-text
+          run:
+          - qwen2.5vl:7b
+        port: 11434
+      persistentVolume:
+        enabled: true
+        accessModes:
+        - ReadWriteOnce
+        size: 30Gi
+      service:
+        port: 11434
+        type: ClusterIP
+  # ----------------------------------------------------------------------- #
+  # Apache Airflow — generate_dataset → index_cases → customize_model. DAGs via git-sync.
+  # ----------------------------------------------------------------------- #
+  - chartName: apache-airflow
+    chartRepo: application-collection
+    chartVersion: 1.22.0
+    values:
+      executor: LocalExecutor
+      # Pin Airflow's generated secret keys so the pod template is STABLE across Fleet
+      # re-reconciles (otherwise the chart regenerates the JWT secret each render and
+      # the deployment never converges). Demo-fixed values.
+      fernetKey: "Nv3aCd-3agJbJG1QxzKMezX5pJZB4fRpZIrqhdS-MA4="
+      jwtSecret: "72873f21d1682ddc023f0815344d1cdc0157e59c9c5480bcb430686d6ed466d3"
+      webserverSecretKey: "bb3ea2e3f0a3ad96a2f440ab3ca4e3406985aaf72182662ebd339f53a7a28a7a"
+      redis:
+        enabled: false
+      flower:
+        enabled: false
+      # Stock SUSE Application Collection Airflow image — no custom image needed.
+      # The DAGs use only Python stdlib + psycopg2, and psycopg2 already ships in this
+      # image (Airflow uses Postgres for its own metadata backend).
+      images:
+        airflow:
+          repository: containers/apache-airflow
+          tag: 3.2.2-8.14
+          registry: dp.apps.rancher.io
+          pullPolicy: IfNotPresent
+      dags:
+        gitSync:
+          enabled: true
+          repo: https://github.com/alessandro-festa/aif-community-demos.git
+          branch: main
+          ref: main
+          rev: HEAD
+          depth: 1
+          subPath: blueprints/insurance-support-ollama/dags
+          period: 30s
+      env:
+      - name: POSTGRES_URI
+        value: postgresql://insurance:insurance@support-db:5432/insurance
+      - name: MILVUS_URI
+        value: http://milvus:19530
+      - name: EMBED_BASE_URL
+        value: http://ollama:11434/v1
+      - name: EMBED_MODEL
+        value: nomic-embed-text
+      - name: CHAT_BASE_URL
+        value: http://ollama:11434/v1
+      - name: BASE_MODEL
+        value: qwen2.5vl:7b
+      - name: CUSTOM_MODEL
+        value: support-agent
+      # Synthetic dataset size — the import wizard can override {{N_TICKETS}}
+      # (falls back to 400 if left unset).
+      - name: N_TICKETS
+        value: "{{N_TICKETS}}"
+      ingress:
+        apiServer:
+          enabled: true
+          ingressClassName: nginx
+          annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          hosts:
+          - name: insurance-support-airflow
+            tls:
+              enabled: true
