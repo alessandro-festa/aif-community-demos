@@ -107,6 +107,13 @@ def ollama_create_model(name: str, from_model: str, system: str, messages: list[
     r.raise_for_status()
 
 
+def ollama_tags() -> list[str]:
+    """List model tags on the Ollama server (also used as a readiness probe)."""
+    r = requests.get(f"{_ollama_root()}/api/tags", timeout=HTTP_TIMEOUT)
+    r.raise_for_status()
+    return [m["name"] for m in r.json().get("models", [])]
+
+
 # --------------------------------------------------------------------------- #
 # Milvus (REST v2 API via the proxy — requests only)
 # --------------------------------------------------------------------------- #
