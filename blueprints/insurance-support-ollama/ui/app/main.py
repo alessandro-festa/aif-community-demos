@@ -42,6 +42,11 @@ from PIL import Image
 
 CHAT_BASE_URL = os.environ.get("CHAT_BASE_URL", "http://localhost:8011/v1").rstrip("/")
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "")
+# Vision model for accident photos. On the Ollama variant this differs from the chat
+# model (a small vision model can't do tools), so photos are captioned by the vision
+# model and the caption is fed as text to the tool-capable chat model. On the vLLM
+# variant it's the same VL model. Empty -> fall back to the chat model.
+VISION_MODEL = os.environ.get("VISION_MODEL", "")
 EMBED_BASE_URL = os.environ.get("EMBED_BASE_URL", "http://localhost:8011/v1").rstrip("/")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "EMPTY")
@@ -322,15 +327,42 @@ def _default_model() -> str:
     return served[0] if served else ""
 
 
+# Models the endpoint has told us don't support tools (e.g. many vision models on
+# Ollama) — we stop sending tools to them and fall back to the guided UI ticket forms.
+_no_tools: set[str] = set()
+
+
 def chat_completion(messages: list[dict], model: str, use_tools: bool) -> dict:
-    payload = {"model": model, "messages": messages, "temperature": 0.2, "max_tokens": 700}
-    if use_tools:
-        payload["tools"] = TOOLS
-    r = requests.post(f"{CHAT_BASE_URL}/chat/completions", json=payload,
-                      headers={"Authorization": f"Bearer {OPENAI_API_KEY}"}, timeout=HTTP_TIMEOUT)
+    def _post(with_tools: bool):
+        payload = {"model": model, "messages": messages, "temperature": 0.2, "max_tokens": 700}
+        if with_tools:
+            payload["tools"] = TOOLS
+        return requests.post(f"{CHAT_BASE_URL}/chat/completions", json=payload,
+                             headers={"Authorization": f"Bearer {OPENAI_API_KEY}"}, timeout=HTTP_TIMEOUT)
+
+    want_tools = use_tools and model not in _no_tools
+    r = _post(want_tools)
+    # Some models don't support tools ("... does not support tools") — retry once
+    # without them, remember the model, and let ticket actions use the sidebar forms.
+    if r.status_code >= 400 and want_tools and "tool" in r.text.lower():
+        _no_tools.add(model)
+        r = _post(False)
     if r.status_code >= 400:
         raise HTTPException(status_code=502, detail=f"chat call failed: {r.text[:300]}")
     return r.json()["choices"][0]["message"]
+
+
+def describe_photo(jpeg: bytes, model: str) -> str:
+    """Caption an accident photo with the vision model (no tools)."""
+    msg = chat_completion([
+        {"role": "system", "content": "You are an insurance claims assistant. Describe the "
+         "damage visible in this photo factually in 2-3 sentences for a claim note."},
+        {"role": "user", "content": [
+            {"type": "text", "text": "Describe the damage in this photo."},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{_b64(jpeg)}"}},
+        ]},
+    ], model, use_tools=False)
+    return (msg.get("content") or "").strip()
 
 
 # --------------------------------------------------------------------------- routes
@@ -371,16 +403,20 @@ async def chat(
     except Exception:  # noqa: BLE001
         prior = []
 
-    user_content: object = message
+    # If a photo is attached, caption it with the vision model, then feed the caption
+    # as TEXT to the (tool-capable) chat model — so the chat model never needs to be
+    # multimodal AND tool-capable at once.
+    text = message
     if file is not None:
         jpeg = _as_jpeg(await file.read())
-        user_content = [
-            {"type": "text", "text": message or "Here is a photo of the incident."},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{_b64(jpeg)}"}},
-        ]
+        try:
+            caption = describe_photo(jpeg, VISION_MODEL or mdl)
+            text = (message + f"\n\n[Attached accident photo — visual description: {caption}]").strip()
+        except HTTPException:
+            text = (message + "\n\n[An accident photo was attached but could not be analysed.]").strip()
 
     messages = [{"role": "system", "content": SYSTEM_PERSONA}, *prior,
-                {"role": "user", "content": user_content}]
+                {"role": "user", "content": text}]
     msg = chat_completion(messages, mdl, use_tools=True)
 
     proposed = None
@@ -501,16 +537,8 @@ async def analyze_photo(file: UploadFile = File(...), model: str = Form("")):
     """Describe an accident photo with the vision model and index it (CLIP) so it
     becomes searchable by image similarity."""
     jpeg = _as_jpeg(await file.read())
-    mdl = model.strip() or _default_model()
-    msg = chat_completion([
-        {"role": "system", "content": "You are an insurance claims assistant. Describe the "
-         "damage visible in this photo factually in 2-3 sentences for a claim note."},
-        {"role": "user", "content": [
-            {"type": "text", "text": "Describe the damage in this photo."},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{_b64(jpeg)}"}},
-        ]},
-    ], mdl, use_tools=False)
-    caption = (msg.get("content") or "").strip()
+    mdl = model.strip() or VISION_MODEL or _default_model()
+    caption = describe_photo(jpeg, mdl)
     vec = clip_image_embed(jpeg)
     indexed = False
     if vec is not None:

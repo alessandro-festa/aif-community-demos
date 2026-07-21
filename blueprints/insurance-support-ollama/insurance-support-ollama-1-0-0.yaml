@@ -10,7 +10,8 @@ metadata:
 # claims/tickets) into PostgreSQL and embeds the tickets into Milvus; a local SUSE chat
 # UI lets a customer upload an accident photo, chat with a support-agent persona, open/
 # close tickets, and see SIMILAR past cases — redacted (PII removed) with Presidio.
-# Ollama serves qwen2.5vl:3b (chat + vision) and nomic-embed-text (semantic index).
+# Ollama serves qwen2.5:3b (chat + open/close-ticket tool-calling), qwen2.5vl:3b
+# (accident-photo vision), and nomic-embed-text (semantic index) — all <4B for CPU.
 # All components from the SUSE Application Collection. DEMO ONLY — synthetic data.
 spec:
   source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
@@ -27,9 +28,10 @@ spec:
     cases — every retrieved case is REDACTED with Presidio before display so one
     customer never sees another's personal data.
 
-    Ollama serves qwen2.5vl:3b (chat + accident-photo vision) and nomic-embed-text
-    (semantic index); CLIP image similarity runs on CPU in the local UI. The Airflow
-    `customize_model` DAG creates a `support-agent` persona model.
+    Ollama serves qwen2.5:3b (chat + tool-calling for open/close ticket), qwen2.5vl:3b
+    (accident-photo captioning), and nomic-embed-text (semantic index); CLIP image
+    similarity runs on CPU in the local UI. The Airflow `customize_model` DAG creates a
+    `support-agent` persona model from the tool-capable qwen2.5:3b.
 
     Prerequisites: the SUSE AI Factory operator, the application-collection ClusterRepo
     (+ credentials secret), a default StorageClass, and cert-manager. After importing,
@@ -109,7 +111,8 @@ spec:
         portName: milvus
         type: ClusterIP
   # ----------------------------------------------------------------------- #
-  # Ollama — chat + vision (qwen2.5vl:3b) and embeddings (nomic-embed-text), CPU.
+  # Ollama — chat+tools (qwen2.5:3b), photo vision (qwen2.5vl:3b), embeddings
+  # (nomic-embed-text), CPU.
   # ----------------------------------------------------------------------- #
   - chartName: ollama
     chartRepo: application-collection
@@ -127,10 +130,11 @@ spec:
           draEnabled: false
         models:
           pull:
-          - qwen2.5vl:3b
-          - nomic-embed-text
+          - qwen2.5:3b        # chat + tool-calling (open/close ticket) — <4B, CPU
+          - qwen2.5vl:3b      # accident-photo vision (captioning)
+          - nomic-embed-text  # semantic embeddings
           run:
-          - qwen2.5vl:3b
+          - qwen2.5:3b
         port: 11434
       persistentVolume:
         enabled: true
@@ -189,7 +193,7 @@ spec:
       - name: CHAT_BASE_URL
         value: http://ollama:11434/v1
       - name: BASE_MODEL
-        value: qwen2.5vl:3b
+        value: qwen2.5:3b
       - name: CUSTOM_MODEL
         value: support-agent
       # Synthetic dataset size — the import wizard can override {{N_TICKETS}}

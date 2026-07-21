@@ -45,6 +45,7 @@ localFrontend:
     # Chat/vision via the vLLM router (forwarded to :8011); embeddings via Ollama.
     CHAT_BASE_URL: "http://localhost:8011/v1"
     CHAT_MODEL: "Qwen/Qwen2.5-VL-7B-Instruct"
+    VISION_MODEL: "Qwen/Qwen2.5-VL-7B-Instruct"
     EMBED_BASE_URL: "http://localhost:11434/v1"
     EMBED_MODEL: "nomic-embed-text"
     OPENAI_API_KEY: "EMPTY"

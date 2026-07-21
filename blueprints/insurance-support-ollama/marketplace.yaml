@@ -46,6 +46,7 @@ localFrontend:
   env:
     CHAT_BASE_URL: "http://localhost:11434/v1"
     CHAT_MODEL: ""
+    VISION_MODEL: "qwen2.5vl:3b"
     EMBED_BASE_URL: "http://localhost:11434/v1"
     EMBED_MODEL: "nomic-embed-text"
     OPENAI_API_KEY: "EMPTY"
@@ -68,8 +69,9 @@ guide:
     body: |
       In the SUSE AI Factory UI, go to **Blueprints → Insurance Support Copilot
       (Ollama, CPU) → Create AIWorkload**, choose a target **namespace**, and deploy.
-      Wait for Postgres, Milvus, Ollama (it pulls `qwen2.5vl:3b` + `nomic-embed-text`
-      on first start — several GB), and Airflow to be Ready. Enter the namespace below.
+      Wait for Postgres, Milvus, Ollama (it pulls `qwen2.5:3b` + `qwen2.5vl:3b` +
+      `nomic-embed-text` on first start — several GB), and Airflow to be Ready. Enter
+      the namespace below.
     action: {type: namespace-input}
   - title: Run the Airflow pipeline
     body: |
