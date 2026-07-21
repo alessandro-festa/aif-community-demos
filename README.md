@@ -9,17 +9,21 @@ small local demo UI and a step-by-step guide.
 
 ## Blueprints
 
-| Blueprint | Folder | What it is |
-|-----------|--------|-----------|
-| **Airflow GenAI RAG (Ollama)** | [`blueprints/airflow-genai-rag`](blueprints/airflow-genai-rag) | Apache Airflow + Ollama + Milvus RAG pipeline (a SUSE/Ollama derivation of Astronomer's gen-ai-fine-tune-rag use case). Airflow ingests a knowledge base and customizes an Ollama model; a local UI generates grounded posts. |
-| **SUSE VSC** | [`blueprints/suse-vss`](blueprints/suse-vss) | All-SUSE, non-NVIDIA Video Search & Summarization on CPU — Ollama (`moondream:1.8b`) + Milvus, with a local SUSE-styled UI. |
+| Blueprint | Folder | Compute | What it is |
+|-----------|--------|---------|-----------|
+| **Airflow GenAI RAG (Ollama)** | [`blueprints/airflow-genai-rag`](blueprints/airflow-genai-rag) | CPU | Apache Airflow + Ollama + Milvus RAG pipeline (a SUSE/Ollama derivation of Astronomer's gen-ai-fine-tune-rag use case). Airflow ingests a knowledge base and customizes an Ollama model; a local UI generates grounded posts via RAG. |
+| **Fraud / AML Detection (Ollama)** | [`blueprints/fraud-detection-ollama`](blueprints/fraud-detection-ollama) | CPU | Financial-crime / money-laundering / anomaly detection. Airflow generates a synthetic fraud graph (SantanderAI/gen-fraud-graph), trains an XGBoost classifier, and indexes behavioural vectors in Milvus; a local LLM (Ollama, `qwen2.5:3b`) acts as an AML analyst explaining flagged accounts. |
+| **Fraud / AML Detection (vLLM)** | [`blueprints/fraud-detection-vllm`](blueprints/fraud-detection-vllm) | **GPU** | Same fraud/AML pipeline as above, but the analyst LLM (`Qwen/Qwen2.5-3B-Instruct`) is served by vLLM on an NVIDIA GPU. Requires a real GPU node + GPU Operator. |
+| **SUSE VSC (Video Search & Summarization)** | [`blueprints/suse-vss`](blueprints/suse-vss) | CPU | All-SUSE, non-NVIDIA Video Search & Summarization. Ollama serves `moondream:1.8b` (multimodal) and Milvus stores each frame's CLIP embedding. Local SUSE-styled UI: ingest a video by URL / upload / webcam / YouTube / RTSP, run a prompt, and search past frames by text. |
+| **VisionGPT (Ollama)** | [`blueprints/visiongpt-ollama`](blueprints/visiongpt-ollama) | CPU | LLM-assisted navigation hazard detection (a SUSE derivation of AIS-Clemson's VisionGPT). Ollama serves Qwen2.5-VL (`qwen2.5vl:3b`); a local UI samples frames from a walking video and returns a per-frame danger score + short reason at a selectable sensitivity. |
+| **VisionGPT (vLLM)** | [`blueprints/visiongpt-vllm`](blueprints/visiongpt-vllm) | **GPU** | Same VisionGPT hazard detection as above, but `Qwen/Qwen2.5-VL-3B-Instruct` is served by vLLM on an NVIDIA GPU. Requires a real GPU node + GPU Operator. |
 
 Every blueprint folder contains:
 - `*-<version>.yaml` — the Blueprint CR to `kubectl apply`;
 - `ui/` — a local FastAPI + SUSE-styled demo UI;
-- `marketplace.yaml` — catalog card, prerequisites, local-frontend definition, and guided-demo steps;
+- `marketplace.yaml` — catalog card, prerequisites, local-frontend definition, in-cluster component UIs, and guided-demo steps;
 - `README.md` — install + demo runbook;
-- (airflow) `dags/` + `include/` — the Airflow DAGs (delivered via git-sync) and sample data.
+- (Airflow-based blueprints) `dags/` + `include/` — the Airflow DAGs (delivered via git-sync) and sample data.
 
 ## Blueprint Marketplace
 
@@ -42,6 +46,7 @@ Host prerequisites: `kubectl`, `git`, `python3`. See [`marketplace/README.md`](m
 
 - SUSE AI Factory operator installed;
 - the `application-collection` ClusterRepo + credentials secret;
-- a default StorageClass and cert-manager.
+- a default StorageClass and cert-manager;
+- for the **GPU blueprints** (Fraud/vLLM, VisionGPT/vLLM): the NVIDIA **GPU Operator** and a node with a real NVIDIA GPU.
 
 Import a blueprint, then create an **AIWorkload** from it in the SUSE AI Factory UI to deploy it.
