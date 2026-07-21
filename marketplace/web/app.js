@@ -534,6 +534,39 @@ async function refreshProcesses() {
     b.addEventListener("click", async () => { await stopProc(procs[+b.dataset.stop]); refreshProcesses(); }));
 }
 
+function kcRow(p) {
+  return `<div class="kc-item"><code>${esc(p)}</code><button class="link" data-kc-remove="${esc(p)}">remove</button></div>`;
+}
+
+function wireKubeconfigImport() {
+  const err = () => document.getElementById("kc-err");
+  document.getElementById("kc-import").addEventListener("click", async (e) => {
+    err().textContent = "";
+    const content = document.getElementById("kc-content").value.trim();
+    const name = document.getElementById("kc-name").value.trim();
+    const path = document.getElementById("kc-path").value.trim();
+    if (!content && !path) { err().textContent = "Paste a kubeconfig or enter a file path."; return; }
+    e.target.disabled = true; e.target.innerHTML = `<span class="spinner"></span>Importing…`;
+    try {
+      const d = await postJSON("/api/kubeconfig/import", { content, name, path });
+      state.contexts = d.contexts || [];
+      state.settings = { ...(state.settings || {}), kubeconfigs: d.kubeconfigs || [] };
+      renderSettings(); renderClusterChip();
+    } catch (ex) {
+      err().textContent = String(ex.message || ex);
+      e.target.disabled = false; e.target.textContent = "Import";
+    }
+  });
+  document.querySelectorAll("[data-kc-remove]").forEach((b) => b.addEventListener("click", async () => {
+    try {
+      const d = await postJSON("/api/kubeconfig/remove", { path: b.dataset.kcRemove });
+      state.contexts = d.contexts || [];
+      state.settings = { ...(state.settings || {}), kubeconfigs: d.kubeconfigs || [] };
+      renderSettings(); renderClusterChip();
+    } catch (ex) { err().textContent = String(ex.message || ex); }
+  }));
+}
+
 function renderSettings() {
   const s = state.settings || {};
   const opts = state.contexts.map((c) =>
@@ -547,10 +580,34 @@ function renderSettings() {
       <input id="ref" value="${esc(s.blueprintsRef || "")}" ${s.gitManaged ? "" : "disabled"} />
       ${s.gitManaged ? "" : `<div class="muted">Running with <code>--dir</code>; git settings are disabled.</div>`}
       <label>Target cluster (kube context)</label>
-      <select id="ctx"><option value="">— host current-context —</option>${opts}</select>
+      <div class="row">
+        <select id="ctx"><option value="">— host current-context —</option>${opts}</select>
+        <button id="refresh-ctx" style="max-width:110px;margin-top:0">Refresh</button>
+      </div>
       <div class="section row"><button class="primary" id="save">Save</button><span id="msg" class="muted"></span></div>
       <div class="error" id="err"></div>
+    </div>
+
+    <div class="card section" style="max-width:640px">
+      <h3 style="margin:0 0 6px">Import a kubeconfig</h3>
+      <div class="muted" style="margin-bottom:8px">Merge another kubeconfig so its contexts appear in the list above — paste its YAML or give a file path on this machine.</div>
+      ${(s.kubeconfigs || []).length ? `<div id="kc-list">${(s.kubeconfigs || []).map(kcRow).join("")}</div>` : `<div class="muted" id="kc-list">No imported kubeconfigs.</div>`}
+      <label>Paste kubeconfig YAML</label>
+      <textarea id="kc-content" placeholder="apiVersion: v1\nkind: Config\n..." style="min-height:90px"></textarea>
+      <div class="row">
+        <input id="kc-name" placeholder="name (e.g. lima-k3s)" />
+        <input id="kc-path" placeholder="…or a path, e.g. ~/.kube/lima.yaml" />
+      </div>
+      <div class="row"><button class="primary" id="kc-import" style="max-width:160px">Import</button><span id="kc-msg" class="muted"></span></div>
+      <div class="error" id="kc-err"></div>
     </div>`;
+
+  document.getElementById("refresh-ctx").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    try { state.contexts = await getJSON("/api/contexts"); } catch { state.contexts = []; }
+    renderSettings();
+  });
+  wireKubeconfigImport();
   document.getElementById("save").addEventListener("click", async () => {
     const btn = document.getElementById("save");
     btn.disabled = true; btn.innerHTML = `<span class="spinner"></span>Saving…`;

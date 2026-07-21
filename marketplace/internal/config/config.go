@@ -17,6 +17,10 @@ type Config struct {
 	BlueprintsRepo string `yaml:"blueprintsRepo" json:"blueprintsRepo"`
 	BlueprintsRef  string `yaml:"blueprintsRef" json:"blueprintsRef"`
 	TargetContext  string `yaml:"targetContext" json:"targetContext"`
+	// Kubeconfigs are extra kubeconfig files imported from the Settings page; they
+	// are merged (via KUBECONFIG) with the host/default kubeconfig so their contexts
+	// become selectable without launching bpm with a custom KUBECONFIG.
+	Kubeconfigs []string `yaml:"kubeconfigs" json:"kubeconfigs,omitempty"`
 }
 
 // Defaults returns the built-in configuration used when no file exists yet.

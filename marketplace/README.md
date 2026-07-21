@@ -39,8 +39,8 @@ Prebuilt binaries are published as a GitHub Release on
 ```bash
 # pick the asset for your platform:
 #   bpm-linux-amd64   bpm-linux-arm64   bpm-darwin-arm64   bpm-darwin-amd64
-curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.2.0/bpm-linux-amd64
-curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.2.0/SHA256SUMS
+curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.3.0/bpm-linux-amd64
+curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.3.0/SHA256SUMS
 
 # verify, then make it runnable:
 shasum -a 256 -c SHA256SUMS --ignore-missing

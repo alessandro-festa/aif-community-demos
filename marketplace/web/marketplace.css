@@ -126,6 +126,12 @@ input:focus, select:focus, textarea:focus {
 label { display: block; font-size: .72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin: 12px 0 5px; }
 
 /* Cards + grid */
+/* Imported kubeconfigs list (Settings). */
+.kc-item { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 0; border-bottom: 1px solid var(--border); }
+.kc-item:last-of-type { border-bottom: none; }
+.kc-item code { font-size: .8rem; word-break: break-all; }
+
 /* Catalog search bar + topic dropdown filter. */
 .catalog-filters { display: flex; gap: 10px; margin: 12px 0 18px; flex-wrap: wrap; }
 .catalog-filters input { flex: 1 1 260px; max-width: 460px; }

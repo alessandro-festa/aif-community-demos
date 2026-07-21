@@ -10,8 +10,13 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/suse/blueprint-marketplace/internal/catalog"
 	"github.com/suse/blueprint-marketplace/internal/config"
@@ -19,18 +24,47 @@ import (
 	"github.com/suse/blueprint-marketplace/internal/proc"
 )
 
+var kcSafeName = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+
 // Server wires the API handlers to the catalog, config, and process manager.
 type Server struct {
-	cfg    *config.Store
-	cat    *catalog.Catalog
-	pm     *proc.Manager
-	web    fs.FS
-	resync func() error // re-pull git + reload catalog after a settings change
+	cfg      *config.Store
+	cat      *catalog.Catalog
+	pm       *proc.Manager
+	web      fs.FS
+	resync   func() error // re-pull git + reload catalog after a settings change
+	kubeBase string       // KUBECONFIG present at launch (empty = kubectl default)
 }
 
 // New builds a Server. resync may be nil (e.g. when running with --dir).
 func New(cfg *config.Store, cat *catalog.Catalog, pm *proc.Manager, web fs.FS, resync func() error) *Server {
-	return &Server{cfg: cfg, cat: cat, pm: pm, web: web, resync: resync}
+	s := &Server{cfg: cfg, cat: cat, pm: pm, web: web, resync: resync,
+		kubeBase: os.Getenv("KUBECONFIG")}
+	s.applyKubeconfig() // merge any previously-imported kubeconfigs into KUBECONFIG
+	return s
+}
+
+// applyKubeconfig sets the process KUBECONFIG to the launch/default kubeconfig
+// merged with the imported kubeconfig files, so every `kubectl` call (which
+// inherits the process env) sees all contexts. Called at startup and whenever the
+// imported set changes.
+func (s *Server) applyKubeconfig() {
+	extras := s.cfg.Get().Kubeconfigs
+	if len(extras) == 0 {
+		if s.kubeBase != "" {
+			_ = os.Setenv("KUBECONFIG", s.kubeBase)
+		}
+		return
+	}
+	base := s.kubeBase
+	if base == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			base = filepath.Join(home, ".kube", "config")
+		}
+	}
+	parts := filepath.SplitList(base)
+	parts = append(parts, extras...)
+	_ = os.Setenv("KUBECONFIG", strings.Join(parts, string(os.PathListSeparator)))
 }
 
 // Handler returns the root http.Handler (API + static SPA).
@@ -39,6 +73,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/contexts", s.handleContexts)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
+	mux.HandleFunc("POST /api/kubeconfig/import", s.handleKubeconfigImport)
+	mux.HandleFunc("POST /api/kubeconfig/remove", s.handleKubeconfigRemove)
 	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
 	mux.HandleFunc("GET /api/blueprints/{id}/prereqs", s.handlePrereqs)
 	mux.HandleFunc("POST /api/blueprints/{id}/import", s.handleImport)
@@ -90,6 +126,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"blueprintsRepo": cfg.BlueprintsRepo,
 		"blueprintsRef":  cfg.BlueprintsRef,
 		"targetContext":  cfg.TargetContext,
+		"kubeconfigs":    cfg.Kubeconfigs,
 		"gitManaged":     s.resync != nil,
 	})
 }
@@ -101,6 +138,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prev := s.cfg.Get()
+	in.Kubeconfigs = prev.Kubeconfigs // managed via the kubeconfig import/remove endpoints
 	if err := s.cfg.Set(in); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -113,6 +151,123 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.handleGetSettings(w, r)
+}
+
+func kubeconfigDir() (string, error) {
+	d, err := config.Dir()
+	if err != nil {
+		return "", err
+	}
+	kd := filepath.Join(d, "kubeconfigs")
+	return kd, os.MkdirAll(kd, 0o700)
+}
+
+type kubeconfigReq struct {
+	Name    string `json:"name"`    // label for a pasted kubeconfig
+	Content string `json:"content"` // pasted kubeconfig YAML
+	Path    string `json:"path"`    // OR an existing kubeconfig file path
+}
+
+// handleKubeconfigImport adds a kubeconfig — either pasted YAML (saved under the
+// managed kubeconfigs dir) or an existing file path — to the merge set, so its
+// contexts become selectable. Returns the updated kubeconfig list + contexts.
+func (s *Server) handleKubeconfigImport(w http.ResponseWriter, r *http.Request) {
+	var req kubeconfigReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var path string
+	if strings.TrimSpace(req.Content) != "" {
+		// Validate it looks like a kubeconfig before we merge it (a bad file would
+		// otherwise break `kubectl config` for every context).
+		var kc map[string]any
+		if yaml.Unmarshal([]byte(req.Content), &kc) != nil || kc["contexts"] == nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("that doesn't look like a kubeconfig (no 'contexts')"))
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			name = "imported"
+		}
+		name = strings.TrimSuffix(kcSafeName.ReplaceAllString(name, "-"), ".yaml") + ".yaml"
+		kd, err := kubeconfigDir()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		path = filepath.Join(kd, name)
+		if err := os.WriteFile(path, []byte(req.Content), 0o600); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	} else if p := strings.TrimSpace(req.Path); p != "" {
+		if strings.HasPrefix(p, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				p = filepath.Join(home, p[2:])
+			}
+		}
+		if info, err := os.Stat(p); err != nil || info.IsDir() {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("kubeconfig file not found: %s", p))
+			return
+		}
+		path = p
+	} else {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("provide kubeconfig content or a file path"))
+		return
+	}
+
+	cfg := s.cfg.Get()
+	if !slices.Contains(cfg.Kubeconfigs, path) {
+		cfg.Kubeconfigs = append(cfg.Kubeconfigs, path)
+		if err := s.cfg.Set(cfg); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	s.applyKubeconfig()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	ctxs, err := kube.Contexts(ctx)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("imported, but listing contexts failed: %w", err))
+		return
+	}
+	writeJSON(w, map[string]any{"kubeconfigs": s.cfg.Get().Kubeconfigs, "contexts": ctxs})
+}
+
+// handleKubeconfigRemove drops a kubeconfig from the merge set (and deletes the
+// file if it's one we manage).
+func (s *Server) handleKubeconfigRemove(w http.ResponseWriter, r *http.Request) {
+	var req kubeconfigReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	kd, _ := kubeconfigDir()
+	cfg := s.cfg.Get()
+	kept := make([]string, 0, len(cfg.Kubeconfigs))
+	for _, p := range cfg.Kubeconfigs {
+		if p == req.Path {
+			if kd != "" && strings.HasPrefix(p, kd) {
+				_ = os.Remove(p)
+			}
+			continue
+		}
+		kept = append(kept, p)
+	}
+	cfg.Kubeconfigs = kept
+	if err := s.cfg.Set(cfg); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.applyKubeconfig()
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	ctxs, _ := kube.Contexts(ctx)
+	writeJSON(w, map[string]any{"kubeconfigs": cfg.Kubeconfigs, "contexts": ctxs})
 }
 
 func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {

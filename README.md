@@ -44,8 +44,8 @@ Prebuilt binaries are attached to each
 
 ```bash
 # pick the asset for your platform (darwin/linux, amd64/arm64):
-curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.2.0/bpm-linux-amd64
-curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.2.0/SHA256SUMS
+curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.3.0/bpm-linux-amd64
+curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.3.0/SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing && chmod +x bpm-linux-amd64
 ./bpm-linux-amd64   # open http://127.0.0.1:8900
 ```
