@@ -419,6 +419,7 @@ async def chat(
                 {"role": "user", "content": text}]
     msg = chat_completion(messages, mdl, use_tools=True)
 
+    reply = (msg.get("content") or "").strip()
     proposed = None
     cases = None
     for tc in (msg.get("tool_calls") or []):
@@ -431,12 +432,42 @@ async def chat(
         if name in ("create_ticket", "close_ticket"):
             proposed = {"name": name, "arguments": args}  # UI confirms → write
         elif name == "search_similar_cases":
-            cases = semantic_cases(args.get("query", message), 5)
+            cases = semantic_cases(args.get("query") or text, 5)
         elif name == "escalate_to_human":
             proposed = {"name": "escalate_to_human", "arguments": args}
 
-    return {"reply": msg.get("content") or "", "model": mdl,
-            "proposed_action": proposed, "cases": cases}
+    # Models emit an empty content when they make a tool call. If we retrieved cases,
+    # do a grounded follow-up so the assistant actually answers using them.
+    if cases and not reply:
+        ctx = "\n".join(
+            f"- [{c.get('accident_type')}] {c.get('subject')}: "
+            f"{c.get('resolution') or (c.get('body') or '')[:160]} "
+            f"(paid={c.get('was_paid')}, within_policy={c.get('within_policy')})"
+            for c in cases[:5]
+        ) or "(no matches)"
+        try:
+            fmsg = chat_completion([
+                {"role": "system", "content": SYSTEM_PERSONA},
+                {"role": "user", "content":
+                    f"{text}\n\nRelevant past cases (redacted):\n{ctx}\n\n"
+                    "Using only these, answer the customer briefly and suggest next steps."},
+            ], mdl, use_tools=False)
+            reply = (fmsg.get("content") or "").strip()
+        except HTTPException:
+            pass
+
+    # Sensible fallback so the UI never shows an empty bubble.
+    if not reply:
+        if proposed and proposed["name"] in ("create_ticket", "close_ticket"):
+            reply = "I've prepared that ticket action — please review and confirm below."
+        elif proposed and proposed["name"] == "escalate_to_human":
+            reply = "I'll escalate this to a human agent."
+        elif cases:
+            reply = "Here are some similar past cases that may help:"
+        else:
+            reply = "Sorry, I didn't quite catch that — could you rephrase?"
+
+    return {"reply": reply, "model": mdl, "proposed_action": proposed, "cases": cases}
 
 
 # ---- tickets (deterministic writes; called on user confirm or from the UI forms) ----
