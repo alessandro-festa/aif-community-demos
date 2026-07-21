@@ -10,7 +10,7 @@ metadata:
 # claims/tickets) into PostgreSQL and embeds the tickets into Milvus; a local SUSE chat
 # UI lets a customer upload an accident photo, chat with a support-agent persona, open/
 # close tickets, and see SIMILAR past cases — redacted (PII removed) with Presidio.
-# Ollama serves qwen2.5vl:7b (chat + vision) and nomic-embed-text (semantic index).
+# Ollama serves qwen2.5vl:3b (chat + vision) and nomic-embed-text (semantic index).
 # All components from the SUSE Application Collection. DEMO ONLY — synthetic data.
 spec:
   source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
@@ -27,7 +27,7 @@ spec:
     cases — every retrieved case is REDACTED with Presidio before display so one
     customer never sees another's personal data.
 
-    Ollama serves qwen2.5vl:7b (chat + accident-photo vision) and nomic-embed-text
+    Ollama serves qwen2.5vl:3b (chat + accident-photo vision) and nomic-embed-text
     (semantic index); CLIP image similarity runs on CPU in the local UI. The Airflow
     `customize_model` DAG creates a `support-agent` persona model.
 
@@ -109,7 +109,7 @@ spec:
         portName: milvus
         type: ClusterIP
   # ----------------------------------------------------------------------- #
-  # Ollama — chat + vision (qwen2.5vl:7b) and embeddings (nomic-embed-text), CPU.
+  # Ollama — chat + vision (qwen2.5vl:3b) and embeddings (nomic-embed-text), CPU.
   # ----------------------------------------------------------------------- #
   - chartName: ollama
     chartRepo: application-collection
@@ -127,10 +127,10 @@ spec:
           draEnabled: false
         models:
           pull:
-          - qwen2.5vl:7b
+          - qwen2.5vl:3b
           - nomic-embed-text
           run:
-          - qwen2.5vl:7b
+          - qwen2.5vl:3b
         port: 11434
       persistentVolume:
         enabled: true
@@ -189,7 +189,7 @@ spec:
       - name: CHAT_BASE_URL
         value: http://ollama:11434/v1
       - name: BASE_MODEL
-        value: qwen2.5vl:7b
+        value: qwen2.5vl:3b
       - name: CUSTOM_MODEL
         value: support-agent
       # Synthetic dataset size — the import wizard can override {{N_TICKETS}}

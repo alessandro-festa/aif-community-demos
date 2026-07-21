@@ -68,7 +68,7 @@ guide:
     body: |
       In the SUSE AI Factory UI, go to **Blueprints → Insurance Support Copilot
       (Ollama, CPU) → Create AIWorkload**, choose a target **namespace**, and deploy.
-      Wait for Postgres, Milvus, Ollama (it pulls `qwen2.5vl:7b` + `nomic-embed-text`
+      Wait for Postgres, Milvus, Ollama (it pulls `qwen2.5vl:3b` + `nomic-embed-text`
       on first start — several GB), and Airflow to be Ready. Enter the namespace below.
     action: {type: namespace-input}
   - title: Run the Airflow pipeline

@@ -14,7 +14,7 @@ Config (env, injected by the apache-airflow component):
   EMBED_BASE_URL   http://ollama:11434/v1              OpenAI-compatible /embeddings
   EMBED_MODEL      nomic-embed-text
   CHAT_BASE_URL    http://ollama:11434/v1              OpenAI-compatible chat (persona base)
-  BASE_MODEL       qwen2.5vl:7b                        base model to customize from (Ollama)
+  BASE_MODEL       qwen2.5vl:3b                        base model to customize from (Ollama)
   CUSTOM_MODEL     support-agent                       created persona model tag
   N_TICKETS        400                                 synthetic support tickets to generate
   CASES_COLLECTION support_cases
@@ -33,7 +33,7 @@ MILVUS_TOKEN = os.environ.get("MILVUS_TOKEN", "")
 EMBED_BASE_URL = os.environ.get("EMBED_BASE_URL", "http://ollama:11434/v1").rstrip("/")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 CHAT_BASE_URL = os.environ.get("CHAT_BASE_URL", "http://ollama:11434/v1").rstrip("/")
-BASE_MODEL = os.environ.get("BASE_MODEL", "qwen2.5vl:7b")
+BASE_MODEL = os.environ.get("BASE_MODEL", "qwen2.5vl:3b")
 CUSTOM_MODEL = os.environ.get("CUSTOM_MODEL", "support-agent")
 def _int_env(name: str, default: int) -> int:
     """Parse an int env var, tolerating an unfilled '{{...}}' wizard placeholder."""

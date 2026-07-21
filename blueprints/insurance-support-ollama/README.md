@@ -15,7 +15,7 @@ Airflow ─ generate_dataset → Postgres (customers/families/policies/claims/ti
         ├ index_cases      → embed tickets → Milvus support_cases (semantic search)
         └ customize_model  → Ollama persona model `support-agent`
 
-Local chat UI ─ chat + accident photo → Ollama qwen2.5vl:7b (chat + vision)
+Local chat UI ─ chat + accident photo → Ollama qwen2.5vl:3b (chat + vision)
    ├ semantic search : text  → nomic-embed → Milvus → redact (Presidio) → show
    ├ similarity      : photo → CLIP        → Milvus → redact → show
    ├ open/close ticket: model proposes → you confirm → Postgres write
@@ -28,7 +28,7 @@ Local chat UI ─ chat + accident photo → Ollama qwen2.5vl:7b (chat + vision)
 |---|---|---|
 | PostgreSQL | `postgresql` (application-collection) | `support-db:5432`; customers/policies/claims/tickets. |
 | Milvus | `milvus` (application-collection) | Standalone + REST v2; semantic case index at `milvus:19530`. |
-| Ollama | `ollama` (application-collection) | CPU; `qwen2.5vl:7b` (chat+vision) + `nomic-embed-text`. |
+| Ollama | `ollama` (application-collection) | CPU; `qwen2.5vl:3b` (chat+vision) + `nomic-embed-text`. |
 | Apache Airflow | `apache-airflow` (application-collection) | Custom image (Faker + psycopg2); DAGs via git-sync. |
 
 CLIP (`clip-ViT-B-32`) and Presidio run **in the local UI on CPU** — no extra cluster
