@@ -166,6 +166,17 @@ button.stop:hover { filter: brightness(1.1); }
 .bubble.user { align-self: flex-end; background: var(--accent-secondary); color: #fff; }
 .bubble.assistant { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--border); }
 
+/* Rendered markdown inside an assistant bubble. */
+.bubble p { margin: 0 0 6px; }
+.bubble p:last-child { margin-bottom: 0; }
+.bubble ul, .bubble ol { margin: 4px 0 8px; padding-left: 20px; }
+.bubble li { margin: 2px 0; }
+.bubble h4, .bubble h5, .bubble h6 { margin: 8px 0 4px; font-size: .9rem; font-weight: 700; }
+.bubble code { background: rgba(0,0,0,.28); border-radius: 4px; padding: 1px 5px; font-size: .82em; }
+.bubble pre { background: rgba(0,0,0,.28); border-radius: 6px; padding: 10px; overflow-x: auto; margin: 6px 0; }
+.bubble pre code { background: none; padding: 0; }
+.bubble a { color: var(--mint); }
+
 .trace { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 6px; }
 .tstep { font-family: ui-monospace, monospace; font-size: .72rem; color: var(--text-muted); margin: 2px 0; }
 

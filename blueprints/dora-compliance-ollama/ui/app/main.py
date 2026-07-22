@@ -30,6 +30,7 @@ Config (env):
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -509,7 +510,18 @@ def agent(req: AgentReq):
                 except Exception:
                     args = {}
                 impl = TOOL_IMPL.get(name)
-                result = impl(**args) if impl else {"error": f"unknown tool {name}"}
+                if impl:
+                    # Keep only kwargs the tool actually accepts — models sometimes invent
+                    # extra args (e.g. a `limit` on a no-arg tool), which would otherwise
+                    # raise a TypeError and abort the agent turn.
+                    accepted = set(inspect.signature(impl).parameters)
+                    safe_args = {k: v for k, v in args.items() if k in accepted}
+                    try:
+                        result = impl(**safe_args)
+                    except Exception as e:  # a single tool failure shouldn't kill the turn
+                        result = {"error": f"{name} failed: {e}"}
+                else:
+                    result = {"error": f"unknown tool {name}"}
                 trace.append({"tool": name, "args": args, "result": result})
                 messages.append({"role": "tool", "tool_call_id": tc.get("id", name),
                                  "name": name, "content": json.dumps(result, default=str)[:6000]})

@@ -7,6 +7,38 @@ const eur = (v) => (v == null ? "—" : "€" + Math.round(v).toLocaleString());
 const sevClass = (s) => ({ critical: "bad", major: "warn", minor: "neutral" }[s] || "neutral");
 const when = (v) => (v ? new Date(v).toLocaleString() : "—");
 
+// Minimal, self-contained markdown → HTML for the agent's replies (no external deps).
+// Escapes HTML first, then applies a safe subset: fenced/inline code, headings, bold,
+// italic, links, and bullet / numbered lists.
+function mdToHtml(src) {
+  const inline = (t) => esc(t)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const lines = (src || "").split(/\r?\n/);
+  let html = "", list = null, code = false, buf = [];
+  const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+  for (const raw of lines) {
+    if (/^\s*```/.test(raw)) {
+      if (code) { html += `<pre><code>${esc(buf.join("\n"))}</code></pre>`; buf = []; code = false; }
+      else { closeList(); code = true; }
+      continue;
+    }
+    if (code) { buf.push(raw); continue; }
+    const line = raw.trimEnd();
+    if (!line.trim()) { closeList(); continue; }
+    let m;
+    if ((m = line.match(/^(#{1,3})\s+(.*)$/))) { closeList(); const n = m[1].length + 3; html += `<h${n}>${inline(m[2])}</h${n}>`; continue; }
+    if ((m = line.match(/^\s*[-*]\s+(.*)$/))) { if (list !== "ul") { closeList(); html += "<ul>"; list = "ul"; } html += `<li>${inline(m[1])}</li>`; continue; }
+    if ((m = line.match(/^\s*\d+\.\s+(.*)$/))) { if (list !== "ol") { closeList(); html += "<ol>"; list = "ol"; } html += `<li>${inline(m[1])}</li>`; continue; }
+    closeList(); html += `<p>${inline(line)}</p>`;
+  }
+  if (code) html += `<pre><code>${esc(buf.join("\n"))}</code></pre>`;
+  closeList();
+  return html;
+}
+
 async function getJSON(u, o) {
   const r = await fetch(u, o);
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
@@ -140,7 +172,7 @@ async function ask(text) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: q, history }),
     });
-    thinking.innerHTML = esc(d.reply) + renderTrace(d.trace);
+    thinking.innerHTML = mdToHtml(d.reply) + renderTrace(d.trace);
     history.push({ role: "user", content: q }, { role: "assistant", content: d.reply });
   } catch (e) {
     thinking.innerHTML = `<span class="error">${esc(String(e))}</span>`;
