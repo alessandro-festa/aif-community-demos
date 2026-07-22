@@ -50,8 +50,8 @@ modelSizes:
   envKey: LLM_MODEL
   replace: "{{MODEL}}"
   options:
-    - {id: small, label: "1.5B — faster (CPU)", model: "qwen2.5:1.5b"}
-    - {id: large, label: "3B — higher quality (tool-calling)", model: "qwen2.5:3b"}
+    - {id: small, label: "1.5B — default, faster (CPU)", model: "qwen2.5:1.5b"}
+    - {id: large, label: "3B — slower, higher quality", model: "qwen2.5:3b"}
 guide:
   - title: Import the blueprint
     body: |
