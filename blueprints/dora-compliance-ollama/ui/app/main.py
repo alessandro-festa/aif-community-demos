@@ -214,7 +214,16 @@ def _airflow(method: str, path: str, body: dict | None = None) -> dict:
     return r.json() if r.text else {}
 
 
+def airflow_unpause(dag_id: str) -> None:
+    # Newly git-synced DAGs default to paused, so a triggered run would sit queued forever.
+    _airflow("PATCH", f"/dags/{dag_id}?update_mask=is_paused", {"is_paused": False})
+
+
 def airflow_trigger(dag_id: str) -> dict:
+    try:
+        airflow_unpause(dag_id)
+    except Exception:
+        pass  # best-effort; trigger may still work if already active
     return _airflow("POST", f"/dags/{dag_id}/dagRuns", {"logical_date": None})
 
 
