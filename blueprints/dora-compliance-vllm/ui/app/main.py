@@ -57,6 +57,13 @@ AIRFLOW_BASE_URL = os.environ.get("AIRFLOW_BASE_URL", "http://localhost:8080").r
 AIRFLOW_USER = os.environ.get("AIRFLOW_USER", "admin")
 AIRFLOW_PASSWORD = os.environ.get("AIRFLOW_PASSWORD", "admin")
 HTTP_TIMEOUT = 120
+# LLM generation on a small CPU model can be slow; give chat() a longer read timeout than
+# the fast Postgres/Milvus calls. Override with LLM_TIMEOUT if needed.
+LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "300"))
+# Max chars of a tool result fed back into the model — keeps the agent context (and thus
+# per-step generation time) small on CPU. The UI still shows full data via its own endpoints.
+TOOL_RESULT_MAX = int(os.environ.get("TOOL_RESULT_MAX", "1800"))
+AGENT_MAX_STEPS = int(os.environ.get("AGENT_MAX_STEPS", "5"))
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 # The pipeline DAGs, in run order — used by the agent's trigger_pipeline tool.
@@ -154,13 +161,14 @@ def parse_json(text: str) -> dict:
     return {}
 
 
-def chat(messages: list[dict], tools: list[dict] | None = None, temperature: float = 0.2) -> dict:
-    payload = {"model": LLM_MODEL, "temperature": temperature, "max_tokens": 800,
+def chat(messages: list[dict], tools: list[dict] | None = None, temperature: float = 0.2,
+         max_tokens: int = 512) -> dict:
+    payload = {"model": LLM_MODEL, "temperature": temperature, "max_tokens": max_tokens,
                "messages": messages}
     if tools:
         payload["tools"] = tools
     r = requests.post(f"{OPENAI_BASE_URL}/chat/completions", json=payload,
-                      headers={"Authorization": f"Bearer {OPENAI_API_KEY}"}, timeout=HTTP_TIMEOUT)
+                      headers={"Authorization": f"Bearer {OPENAI_API_KEY}"}, timeout=LLM_TIMEOUT)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]
 
@@ -259,13 +267,18 @@ def tool_get_bafin_report(limit: int = 15) -> dict:
     return {"count": len(rows), "reportable": rows}
 
 
-def tool_get_sla_breaches() -> dict:
+def tool_get_sla_breaches(limit: int = 15) -> dict:
     if not table_exists("mart_sla_breach"):
         return {"error": "no SLA-breach mart yet — run check_compliance_alerts"}
+    # total counts so the model can report the full picture even though we only feed it a slice
+    totals = {r["status"]: r["c"] for r in pg(
+        "SELECT status, count(*) c FROM mart_sla_breach GROUP BY status")}
     rows = pg("SELECT incident_id, institution_id, dora_severity, deadline_ts, "
               "hours_remaining, status FROM mart_sla_breach "
-              "WHERE status IN ('BREACHED','IMMINENT') ORDER BY hours_remaining ASC")
-    return {"count": len(rows), "breaches": rows}
+              "WHERE status IN ('BREACHED','IMMINENT') ORDER BY hours_remaining ASC LIMIT %s",
+              (max(1, min(int(limit or 15), 25)),))
+    return {"totals": {"breached": totals.get("BREACHED", 0), "imminent": totals.get("IMMINENT", 0)},
+            "showing": len(rows), "breaches": rows}
 
 
 def tool_get_vendor_risk(limit: int = 10) -> dict:
@@ -493,7 +506,7 @@ def agent(req: AgentReq):
                 {"role": "user", "content": req.message}]
     trace: list[dict] = []
     try:
-        for _step in range(6):  # bounded agent loop
+        for _step in range(AGENT_MAX_STEPS):  # bounded agent loop
             msg = chat(messages, tools=TOOLS)
             tool_calls = msg.get("tool_calls") or []
             if not tool_calls:
@@ -524,7 +537,8 @@ def agent(req: AgentReq):
                     result = {"error": f"unknown tool {name}"}
                 trace.append({"tool": name, "args": args, "result": result})
                 messages.append({"role": "tool", "tool_call_id": tc.get("id", name),
-                                 "name": name, "content": json.dumps(result, default=str)[:6000]})
+                                 "name": name,
+                                 "content": json.dumps(result, default=str)[:TOOL_RESULT_MAX]})
         # Ran out of steps — ask for a final answer without tools.
         final = chat(messages)
         return {"reply": (final.get("content") or "").strip() or
