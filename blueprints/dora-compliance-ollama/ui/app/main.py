@@ -538,7 +538,10 @@ def agent(req: AgentReq):
                 trace.append({"tool": name, "args": args, "result": result})
                 messages.append({"role": "tool", "tool_call_id": tc.get("id", name),
                                  "name": name,
-                                 "content": json.dumps(result, default=str)[:TOOL_RESULT_MAX]})
+                                 # ensure_ascii=False so non-ASCII (e.g. the € sign) reaches
+                                 # the model as-is; otherwise it echoes literal "€".
+                                 "content": json.dumps(result, default=str,
+                                                       ensure_ascii=False)[:TOOL_RESULT_MAX]})
         # Ran out of steps — ask for a final answer without tools.
         final = chat(messages)
         return {"reply": (final.get("content") or "").strip() or
