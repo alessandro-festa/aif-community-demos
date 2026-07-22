@@ -1,0 +1,203 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: dora-compliance-vllm
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: dora-compliance-vllm-1-0-0
+# DORA Compliance Analysis (vLLM, GPU).
+# Same pipeline as the Ollama variant — Airflow simulates ICT incidents, classifies them
+# against the BaFin Article 18 thresholds, builds compliance marts in PostgreSQL and indexes
+# them in Milvus — but the compliance analyst + agent LLM is served by vLLM on a GPU
+# (Qwen/Qwen2.5-3B-Instruct). Requires a real NVIDIA GPU node + the GPU Operator. A local
+# SUSE UI EXPLAINS incidents and runs a tool-calling compliance AGENT that searches the data
+# (via Airflow's Postgres connection + Milvus) and drives the pipeline via the Airflow REST API.
+#
+# Faithful to the DORA classifier rules of Chirag-Kathuria-009/DORA-Pipeline (MIT); the
+# reference's Kafka/PySpark/Iceberg/dbt/Great Expectations/Superset stack is replaced by
+# Airflow Python tasks + PostgreSQL + Milvus + a local FastAPI UI, all from the SUSE
+# Application Collection. The reference has no LLM — the explain + agent layer is added here.
+spec:
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
+  displayName: DORA Compliance Analysis (vLLM, GPU)
+  version: 1.0.0
+  description: |-
+    EU DORA (Digital Operational Resilience Act) ICT-incident compliance pipeline. Apache
+    Airflow simulates synthetic ICT operational incidents, classifies each against the BaFin
+    Article 18 thresholds (CRITICAL — 4h deadline / MAJOR — 72h / MINOR — internal log),
+    enriches them with ICT third-party provider concentration risk, builds compliance marts
+    (BaFin report, vendor risk, SLA breaches) in PostgreSQL, and indexes the incidents in
+    Milvus for semantic search. A local SUSE-styled UI EXPLAINS incidents and runs a
+    tool-calling compliance AGENT whose tools query the data via Airflow's Postgres
+    connection, run Milvus semantic search, and trigger/monitor the pipeline via the Airflow
+    REST API. The LLM is served by vLLM (Qwen/Qwen2.5-3B-Instruct) on a GPU.
+
+    Faithful to the DORA classifier rules of Chirag-Kathuria-009/DORA-Pipeline; the
+    reference's Kafka/PySpark/Iceberg/dbt/Great Expectations/Superset stack is replaced by
+    Airflow Python tasks + PostgreSQL + Milvus + this local UI, all from the SUSE Application
+    Collection. The reference has no LLM — the explain + agent layer is this blueprint's
+    addition.
+
+    Requires: the SUSE AI Factory operator, the application-collection ClusterRepo
+    (+ credentials secret), a default StorageClass, cert-manager, and a node with a real
+    NVIDIA GPU plus the GPU Operator. The LLM model is downloaded on first start. Batch size
+    is controlled by N_INCIDENTS (default 600).
+  components:
+  # ----------------------------------------------------------------------- #
+  # PostgreSQL — tabular store for raw incidents, classifications and marts.
+  # ----------------------------------------------------------------------- #
+  - chartName: postgresql
+    chartRepo: application-collection
+    chartVersion: 0.6.0
+    values:
+      fullnameOverride: dora-db
+      image:
+        registry: dp.apps.rancher.io
+        repository: containers/postgresql
+      auth:
+        database: dora
+        username: dora
+        password: dora
+        postgresPassword: doraadmin
+      primary:
+        persistence:
+          enabled: true
+          size: 8Gi
+  # ----------------------------------------------------------------------- #
+  # Milvus — incident embeddings for the compliance agent's semantic search.
+  # ----------------------------------------------------------------------- #
+  - chartName: milvus
+    chartRepo: application-collection
+    chartVersion: 5.0.22
+    values:
+      cluster:
+        enabled: false
+      image:
+        all:
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+          repository: containers/milvus
+          tag: 2.6.18-8.4
+      etcd:
+        enabled: true
+        replicaCount: 1
+      kafka:
+        enabled: false
+      minio:
+        enabled: true
+        mode: standalone
+        name: minio
+        replicas: 1
+        rootPath: file
+        users:
+        - accessKey: minioadmin
+          policy: consoleAdmin
+          secretKey: minioadmin
+      proxy:
+        enabled: true
+        http:
+          enabled: true
+      standalone:
+        messageQueue: woodpecker
+        persistence:
+          enabled: true
+          persistentVolumeClaim:
+            accessModes: ReadWriteOnce
+            size: 50Gi
+      streaming:
+        enabled: true
+        woodpecker:
+          embedded: true
+          storage:
+            type: minio
+      service:
+        port: 19530
+        portName: milvus
+        type: ClusterIP
+  # ----------------------------------------------------------------------- #
+  # vLLM — local LLM (compliance analyst + agent) served on an NVIDIA GPU.
+  # Tool-calling for the agent: the vLLM OpenAI server is started with
+  # --enable-auto-tool-choice --tool-call-parser=hermes (Qwen uses the hermes parser).
+  # ----------------------------------------------------------------------- #
+  - chartName: vllm
+    chartRepo: application-collection
+    chartVersion: 0.1.10
+    values:
+      servingEngineSpec:
+        runtimeClassName: nvidia
+        modelSpec:
+          - name: qwen25-3b
+            registry: dp.apps.rancher.io
+            repository: containers/vllm-openai
+            tag: "0.19.0-5.29"
+            modelURL: Qwen/Qwen2.5-3B-Instruct
+            replicaCount: 1
+            requestCPU: 6
+            requestMemory: "16Gi"
+            requestGPU: 1
+            pvcStorage: "50Gi"
+            vllmConfig:
+              maxModelLen: 32768
+              dtype: bfloat16
+              gpuMemoryUtilization: 0.9
+              extraArgs:
+                - "--enable-auto-tool-choice"
+                - "--tool-call-parser=hermes"
+      routerSpec:
+        enableRouter: true
+        serviceType: ClusterIP
+        containerPort: 8000
+        servicePort: 80
+  # ----------------------------------------------------------------------- #
+  # Apache Airflow — orchestrates simulate → classify → marts → index → alerts.
+  # DAGs via git-sync; they use psycopg2 + requests only (both in the stock AppCo image).
+  # ----------------------------------------------------------------------- #
+  - chartName: apache-airflow
+    chartRepo: application-collection
+    chartVersion: 1.22.0
+    values:
+      executor: LocalExecutor
+      # Pin Airflow's generated secret keys so the pod template is STABLE across Fleet
+      # re-reconciles (see the ollama variant for the full rationale).
+      fernetKey: "Nv3aCd-3agJbJG1QxzKMezX5pJZB4fRpZIrqhdS-MA4="
+      jwtSecret: "72873f21d1682ddc023f0815344d1cdc0157e59c9c5480bcb430686d6ed466d3"
+      webserverSecretKey: "bb3ea2e3f0a3ad96a2f440ab3ca4e3406985aaf72182662ebd339f53a7a28a7a"
+      redis:
+        enabled: false
+      flower:
+        enabled: false
+      # Stock SUSE Application Collection Airflow image — no custom build needed (the DORA
+      # DAGs import only psycopg2 + requests, both already present in this image).
+      images:
+        airflow:
+          repository: containers/apache-airflow
+          tag: 3.2.2-8.14
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+      dags:
+        gitSync:
+          enabled: true
+          repo: https://github.com/alessandro-festa/aif-community-demos.git
+          branch: main
+          ref: main
+          rev: HEAD
+          depth: 1
+          subPath: blueprints/dora-compliance-vllm/dags
+          period: 30s
+      env:
+      - name: POSTGRES_URI
+        value: postgresql://dora:dora@dora-db:5432/dora
+      - name: MILVUS_URI
+        value: http://milvus:19530
+      - name: N_INCIDENTS
+        value: "600"
+      ingress:
+        apiServer:
+          enabled: true
+          ingressClassName: nginx
+          annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          hosts:
+          - name: dora-airflow
+            tls:
+              enabled: true

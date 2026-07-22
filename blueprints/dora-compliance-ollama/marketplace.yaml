@@ -1,0 +1,95 @@
+id: dora-compliance-ollama
+displayName: DORA Compliance Analysis (Ollama, CPU)
+description: >-
+  EU DORA ICT-incident compliance pipeline. Airflow simulates ICT operational incidents,
+  classifies them against the BaFin Article 18 thresholds (CRITICAL/MAJOR/MINOR + reporting
+  deadline), builds compliance marts in PostgreSQL and indexes them in Milvus. A local LLM
+  (Ollama, qwen2.5) explains incidents and acts as a compliance agent that searches the data
+  via Airflow's Postgres connection and triggers/monitors the pipeline via the Airflow REST
+  API. All from the SUSE Application Collection. Classifier faithful to
+  Chirag-Kathuria-009/DORA-Pipeline.
+category: data-engineering
+tags: [dora, compliance, airflow, milvus, agent, ollama, regtech]
+blueprintFile: dora-compliance-ollama-1-0-0.yaml
+prerequisites:
+  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
+  - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
+  - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
+localFrontend:
+  dir: ui
+  runtime: python
+  install:
+    - "-r ui/requirements.txt"
+  entry: app.main:app
+  port: 8000
+  openPath: /
+  env:
+    POSTGRES_URI: "postgresql://dora:dora@localhost:5432/dora"
+    MILVUS_URI: "http://localhost:19530"
+    OPENAI_BASE_URL: "http://localhost:11434/v1"
+    LLM_MODEL: "{{MODEL}}"
+    OPENAI_API_KEY: "EMPTY"
+    EMBED_DIM: "256"
+    # The compliance agent drives the pipeline through Airflow's REST API (Airflow 3:
+    # POST /auth/token then /api/v2). These point at the forwarded api-server below.
+    AIRFLOW_BASE_URL: "http://localhost:8080"
+    AIRFLOW_USER: "admin"
+    AIRFLOW_PASSWORD: "admin"
+  portForwards:
+    - {name: dora-db, service: dora-db, local: 5432, remote: 5432}
+    - {name: milvus, service: milvus, local: 19530, remote: 19530}
+    - {name: ollama, service: ollama, local: 11434, remote: 11434}
+    - {name: airflow, service: apache-airflow-api-server, local: 8080, remote: 8080}
+# In-cluster component UIs the marketplace can port-forward on demand (button
+# enabled only once the service is Ready).
+componentUIs:
+  - {name: airflow, label: "Airflow UI", service: apache-airflow-api-server, port: 8080, path: /}
+# Let the user pick the compliance-analyst / agent LLM size at import + frontend start (CPU).
+modelSizes:
+  default: small
+  envKey: LLM_MODEL
+  replace: "{{MODEL}}"
+  options:
+    - {id: small, label: "1.5B — faster (CPU)", model: "qwen2.5:1.5b"}
+    - {id: large, label: "3B — higher quality (tool-calling)", model: "qwen2.5:3b"}
+guide:
+  - title: Import the blueprint
+    body: |
+      Applies the DORA Compliance Analysis (Ollama) Blueprint CR to the selected cluster. This
+      adds it to the SUSE AI Factory catalog — it does not deploy anything yet.
+    action: {type: import}
+  - title: Create the AIWorkload (SUSE AI Factory UI)
+    body: |
+      In the SUSE AI Factory UI, go to **Blueprints → DORA Compliance Analysis (Ollama) →
+      Create AIWorkload**, choose a target **namespace**, and deploy. Wait for PostgreSQL,
+      Milvus, Ollama and Airflow to be Ready. Enter the namespace you chose below so the
+      following steps can reach the services.
+    action: {type: namespace-input}
+  - title: Run the pipeline in Airflow
+    body: |
+      Use the **Open Airflow UI** button below (enabled once Airflow is Ready) to reach the
+      Airflow web UI (log in with **admin / admin**). Then trigger these DAGs **in order**,
+      waiting for each to finish before starting the next:
+
+      1. `simulate_incidents` — generate synthetic ICT incidents → PostgreSQL.
+      2. `classify_and_load` — apply the BaFin Article 18 rules → severity + deadlines.
+      3. `build_marts` — BaFin report + vendor-risk marts (+ data-quality checks).
+      4. `index_incidents` — embed incidents → Milvus (agent semantic search).
+      5. `check_compliance_alerts` — SLA-breach mart (deadlines lapsed / imminent).
+
+      (Or just ask the agent in the UI to "run the whole pipeline" — it triggers them for you.)
+  - title: Launch the compliance dashboard
+    body: |
+      Starts `kubectl port-forward` to Postgres (5432), Milvus (19530), Ollama (11434) and the
+      Airflow API server (8080) and runs the SUSE DORA compliance UI locally.
+    action: {type: start-frontend}
+  - title: Explore + ask the agent
+    body: |
+      Open the dashboard: review the severity split, the BaFin reporting queue and SLA
+      breaches, and click **Explain** on any incident for an LLM compliance verdict (why this
+      severity, which authority + deadline, recommended reporting action). Then use the
+      **Compliance agent** panel — ask e.g. *"which ICT providers caused critical incidents?"*
+      or *"show breached reporting deadlines"*; the agent searches the data (via Airflow's
+      Postgres connection + Milvus) and can re-run the pipeline via the Airflow REST API,
+      showing its tool calls as it works.
+    action: {type: open-url, url: "http://localhost:8000"}

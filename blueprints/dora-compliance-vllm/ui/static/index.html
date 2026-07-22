@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DORA Compliance Analysis</title>
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/suse.css" />
+</head>
+<body>
+  <header>
+    <img src="/favicon.svg" alt="SUSE" />
+    <h1>DORA Compliance Analysis</h1>
+    <span class="tag" id="tag">local LLM · Airflow · SUSE</span>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Compliance overview</h2>
+      <div id="health" class="muted"></div>
+      <div id="overview" class="section muted">Loading…</div>
+
+      <h2 style="margin-top:18px;">Incidents</h2>
+      <div class="tabs" id="filters">
+        <button data-sev="" class="active">All</button>
+        <button data-sev="critical">Critical</button>
+        <button data-sev="major">Major</button>
+        <button data-sev="minor">Minor</button>
+      </div>
+      <div id="incidents"><span class="muted">…</span></div>
+    </section>
+
+    <section>
+      <div class="card section">
+        <h2>Incident detail</h2>
+        <div id="detail" class="muted">Select an incident to inspect.</div>
+      </div>
+      <div class="card section">
+        <h2>Compliance analyst (LLM)</h2>
+        <div id="verdict" class="muted">Open an incident and click “Explain”.</div>
+      </div>
+      <div class="card section">
+        <h2>Compliance agent</h2>
+        <div class="muted" style="margin-bottom:8px">
+          Ask about the data — the agent searches incidents (via Airflow’s Postgres connection
+          &amp; Milvus) and can run the pipeline via the Airflow REST API.
+        </div>
+        <div id="chat" class="chat"></div>
+        <textarea id="q" style="margin-top:10px" placeholder="e.g. which ICT providers caused critical incidents? · show breached deadlines · run the whole pipeline"></textarea>
+        <button class="primary" id="ask">Ask the agent</button>
+        <div class="chips" id="examples"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

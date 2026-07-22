@@ -1,0 +1,208 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: dora-compliance-ollama
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: dora-compliance-ollama-1-0-0
+# DORA Compliance Analysis (Ollama, CPU).
+# Apache Airflow simulates synthetic ICT operational incidents, classifies each against the
+# EU DORA / BaFin Article 18 thresholds (CRITICAL / MAJOR / MINOR + notification deadline),
+# builds compliance marts in PostgreSQL, and indexes the incidents in Milvus for semantic
+# search. A local SUSE UI reads the results; a local LLM (Ollama, qwen2.5) EXPLAINS incidents
+# and acts as a compliance AGENT that searches the data (through Airflow's Postgres
+# connection) and can trigger/monitor the pipeline via the Airflow REST API. All components
+# from the SUSE Application Collection.
+#
+# Faithful to the DORA classifier rules of Chirag-Kathuria-009/DORA-Pipeline; the reference's
+# Kafka/PySpark/Iceberg/dbt/Great Expectations/Superset stack is replaced by Airflow Python
+# tasks + PostgreSQL + Milvus + a local FastAPI UI (the all-SUSE-AppCo pattern). The reference
+# has no LLM — the explain + agent layer is this blueprint's addition.
+spec:
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
+  displayName: DORA Compliance Analysis (Ollama, CPU)
+  version: 1.0.0
+  description: |
+    EU DORA (Digital Operational Resilience Act) ICT-incident compliance pipeline. Apache
+    Airflow simulates synthetic ICT operational incidents, classifies each one against the
+    BaFin Article 18 thresholds (CRITICAL — 4h deadline / MAJOR — 72h / MINOR — internal
+    log), enriches them with ICT third-party provider concentration risk, builds compliance
+    marts (BaFin report, vendor risk, SLA breaches) in PostgreSQL, and indexes the incidents
+    in Milvus for semantic search. A local SUSE-styled UI shows severity distribution, the
+    BaFin reporting queue and SLA breaches; a local LLM (Ollama, qwen2.5) EXPLAINS individual
+    incidents and acts as a compliance AGENT — an OpenAI function-calling loop whose tools
+    query the data through Airflow's Postgres connection, run Milvus semantic search, and
+    trigger/monitor the pipeline via the Airflow REST API.
+
+    Faithful to the DORA classifier rules of Chirag-Kathuria-009/DORA-Pipeline; the
+    reference's Kafka/PySpark/Iceberg/dbt/Great Expectations/Superset stack is replaced by
+    Airflow Python tasks + PostgreSQL + Milvus + this local UI, all from the SUSE Application
+    Collection. The reference has no LLM — the explain + agent layer is this blueprint's
+    addition.
+
+    Prerequisites: the SUSE AI Factory operator, the application-collection ClusterRepo
+    (+ credentials secret), a default StorageClass, and cert-manager. After importing, create
+    an AIWorkload from this Blueprint in the AI Factory UI, run the pipeline DAGs in order,
+    then launch the local UI from the marketplace guide. Batch size is controlled by
+    N_INCIDENTS (default 600).
+  components:
+  # ----------------------------------------------------------------------- #
+  # PostgreSQL — tabular store for raw incidents, classifications and marts.
+  # ----------------------------------------------------------------------- #
+  - chartName: postgresql
+    chartRepo: application-collection
+    chartVersion: 0.6.0
+    values:
+      fullnameOverride: dora-db
+      image:
+        registry: dp.apps.rancher.io
+        repository: containers/postgresql
+      auth:
+        database: dora
+        username: dora
+        password: dora
+        postgresPassword: doraadmin
+      primary:
+        persistence:
+          enabled: true
+          size: 8Gi
+  # ----------------------------------------------------------------------- #
+  # Milvus — incident embeddings for the compliance agent's semantic search.
+  # ----------------------------------------------------------------------- #
+  - chartName: milvus
+    chartRepo: application-collection
+    chartVersion: 5.0.22
+    values:
+      cluster:
+        enabled: false
+      image:
+        all:
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+          repository: containers/milvus
+          tag: 2.6.18-8.4
+      etcd:
+        enabled: true
+        replicaCount: 1
+      kafka:
+        enabled: false
+      minio:
+        enabled: true
+        mode: standalone
+        name: minio
+        replicas: 1
+        rootPath: file
+        users:
+        - accessKey: minioadmin
+          policy: consoleAdmin
+          secretKey: minioadmin
+      proxy:
+        enabled: true
+        http:
+          enabled: true
+      standalone:
+        messageQueue: woodpecker
+        persistence:
+          enabled: true
+          persistentVolumeClaim:
+            accessModes: ReadWriteOnce
+            size: 50Gi
+      streaming:
+        enabled: true
+        woodpecker:
+          embedded: true
+          storage:
+            type: minio
+      service:
+        port: 19530
+        portName: milvus
+        type: ClusterIP
+  # ----------------------------------------------------------------------- #
+  # Ollama — local LLM (compliance analyst + agent), CPU.
+  # ----------------------------------------------------------------------- #
+  - chartName: ollama
+    chartRepo: application-collection
+    chartVersion: 1.55.0
+    values:
+      fullnameOverride: ollama
+      image:
+        pullPolicy: IfNotPresent
+        registry: dp.apps.rancher.io
+        repository: containers/ollama
+        tag: 0.21.2-11.48
+      ollama:
+        gpu:
+          enabled: false
+          draEnabled: false
+        models:
+          pull:
+          - "{{MODEL}}"
+          run:
+          - "{{MODEL}}"
+        port: 11434
+      persistentVolume:
+        enabled: true
+        accessModes:
+        - ReadWriteOnce
+        size: 20Gi
+      service:
+        port: 11434
+        type: ClusterIP
+  # ----------------------------------------------------------------------- #
+  # Apache Airflow — orchestrates simulate → classify → marts → index → alerts.
+  # DAGs via git-sync; they use psycopg2 + requests only (both in the stock AppCo image).
+  # ----------------------------------------------------------------------- #
+  - chartName: apache-airflow
+    chartRepo: application-collection
+    chartVersion: 1.22.0
+    values:
+      executor: LocalExecutor
+      # Pin Airflow's generated secret keys so the pod template is STABLE across Fleet
+      # re-reconciles. Left unset, the chart regenerates the api-server JWT secret on
+      # every render → the deployment rolls a new ReplicaSet each reconcile → pods are
+      # killed before they become Ready and the workload never converges. (Demo-fixed
+      # values; for real use, reference pre-created secrets via *SecretName instead.)
+      fernetKey: "Nv3aCd-3agJbJG1QxzKMezX5pJZB4fRpZIrqhdS-MA4="
+      jwtSecret: "72873f21d1682ddc023f0815344d1cdc0157e59c9c5480bcb430686d6ed466d3"
+      webserverSecretKey: "bb3ea2e3f0a3ad96a2f440ab3ca4e3406985aaf72182662ebd339f53a7a28a7a"
+      redis:
+        enabled: false
+      flower:
+        enabled: false
+      # Stock SUSE Application Collection Airflow image — no custom build needed. The DORA
+      # DAGs import only psycopg2 + requests, and both are already present in this image
+      # (psycopg2 ships with Airflow's Postgres provider; requests is an Airflow core dep),
+      # so there is nothing to bake (unlike the fraud blueprint, which needed heavy ML libs).
+      images:
+        airflow:
+          repository: containers/apache-airflow
+          tag: 3.2.2-8.14
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+      dags:
+        gitSync:
+          enabled: true
+          repo: https://github.com/alessandro-festa/aif-community-demos.git
+          branch: main
+          ref: main
+          rev: HEAD
+          depth: 1
+          subPath: blueprints/dora-compliance-ollama/dags
+          period: 30s
+      env:
+      - name: POSTGRES_URI
+        value: postgresql://dora:dora@dora-db:5432/dora
+      - name: MILVUS_URI
+        value: http://milvus:19530
+      - name: N_INCIDENTS
+        value: "600"
+      ingress:
+        apiServer:
+          enabled: true
+          ingressClassName: nginx
+          annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          hosts:
+          - name: dora-airflow
+            tls:
+              enabled: true
