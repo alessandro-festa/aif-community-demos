@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FinOps Multi-Model Chat</title>
+  <link rel="icon" href="/favicon.svg" />
+  <link rel="stylesheet" href="/suse.css" />
+  <style>
+    /* Chat-specific tweaks on top of the shared SUSE tokens. */
+    .chat { display: flex; flex-direction: column; height: calc(100vh - 200px); min-height: 360px; }
+    .messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 6px; }
+    .msg { max-width: 82%; padding: 10px 13px; border-radius: 10px; white-space: pre-wrap; }
+    .msg.user { align-self: flex-end; background: var(--surface-2); border: 1px solid var(--border); }
+    .msg.bot { align-self: flex-start; background: var(--surface); border: 1px solid var(--border); }
+    .msg.blocked { align-self: flex-start; background: #2a1414; border: 1px solid var(--danger); }
+    .meta { margin-top: 6px; font-size: .7rem; color: var(--text-muted); display: flex; gap: 10px; flex-wrap: wrap; }
+    .meta .cost { color: var(--mint); }
+    .composer { display: flex; gap: 8px; margin-top: 10px; }
+    .composer textarea { flex: 1; margin: 0; }
+    .composer button { width: auto; margin: 0; padding: 0 20px; }
+    .totals { display: flex; gap: 8px; flex-wrap: wrap; }
+    .badge { font-size: .72rem; border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
+    .badge.cost { color: var(--mint); border-color: var(--mint); }
+  </style>
+</head>
+<body>
+  <header>
+    <img src="/favicon.svg" alt="SUSE" />
+    <h1>FinOps Multi-Model Chat</h1>
+    <span class="tag" id="tag">LiteLLM · guardrails · SUSE</span>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Session</h2>
+      <label for="model">Model</label>
+      <select id="model"></select>
+      <label for="team">Team (chargeback)</label>
+      <select id="team"></select>
+
+      <h2 style="margin-top:18px;">This session</h2>
+      <div class="totals" id="totals">
+        <span class="badge cost" id="t-cost">$0.000000</span>
+        <span class="badge" id="t-tokens">0 tokens</span>
+        <span class="badge" id="t-msgs">0 messages</span>
+      </div>
+      <div id="health" class="muted" style="margin-top:12px"></div>
+      <div class="summary" style="margin-top:12px; font-size:.8rem">
+        Each reply shows its <strong>cost</strong> and <strong>tokens</strong>.
+        Spend is attributed to the selected team and flows into the Grafana FinOps
+        dashboards. Try a message with an email or credit-card number to trip a
+        guardrail.
+      </div>
+    </section>
+
+    <section class="card chat">
+      <h2>Chat</h2>
+      <div class="messages" id="messages"></div>
+      <div class="composer">
+        <textarea id="input" rows="2" placeholder="Ask something… (Enter to send, Shift+Enter for newline)"></textarea>
+        <button class="primary" id="send">Send</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

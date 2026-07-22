@@ -1,0 +1,161 @@
+id: finops-multimodel-ollama
+displayName: FinOps Multi-Model Gateway (Ollama, CPU)
+description: >-
+  FinOps for a guarded, multi-model LLM gateway. A LiteLLM proxy serves three Ollama
+  models at different per-token prices with guardrails; two cost planes are reconciled
+  in Grafana — TOKEN spend (LiteLLM OSS spend logs → a Prometheus exporter, per model /
+  team / virtual key) and INFRASTRUCTURE cost (OpenCost → Prometheus). Airflow creates
+  per-team virtual keys + budgets, fires synthetic multi-model traffic, and backfills
+  synthetic history into Prometheus. Chat runs in a custom local UI wired to LiteLLM.
+category: finops
+tags: [finops, opencost, litellm, guardrails, prometheus, grafana, airflow, chargeback, multi-model, cost]
+blueprintFile: finops-multimodel-ollama-1-0-0.yaml
+prerequisites:
+  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
+  - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
+  - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
+# The custom chat UI the marketplace runs locally (replaces Open WebUI). Talks to the
+# LiteLLM gateway over a port-forward; env localhost:4000 is auto-remapped to the
+# random local port the marketplace assigns the forward.
+localFrontend:
+  dir: ui
+  runtime: python
+  install:
+    - "-r ui/requirements.txt"
+  entry: app.main:app
+  port: 8000
+  openPath: /
+  env:
+    LITELLM_BASE_URL: "http://localhost:4000"
+    LITELLM_MASTER_KEY: "sk-guardrails-demo"
+  portForwards:
+    - {name: litellm, service: litellm, local: 4000, remote: 4000}
+# In-cluster component UIs the marketplace can port-forward on demand (button enabled
+# once the service is Ready).
+componentUIs:
+  - {name: grafana,  label: "Grafana (FinOps dashboards)", service: grafana, port: 80, path: /d/finops-overview}
+  - {name: airflow,  label: "Airflow UI",                  service: apache-airflow-api-server, port: 8080, path: /}
+  - {name: opencost, label: "OpenCost UI",                 service: opencost, port: 9090, path: /}
+# Pre-import wizard — reused from the litellm-guardrails blueprint. Each selected
+# option is deep-merged into the litellm component's proxy_config (targetComponent)
+# before kubectl apply; guardrail entries append, so options compose.
+importWizard:
+  title: "Select LiteLLM guardrails"
+  body: >-
+    Choose the guardrails to inject into the LiteLLM proxy before import. All chat and
+    all simulated traffic go through LiteLLM, so these are enforced before any model
+    sees the prompt. You can re-import later with a different selection.
+  targetComponent: litellm
+  options:
+    - id: presidio-pii-mask
+      label: "PII masking (Presidio)"
+      description: "Mask PII (emails, credit cards, phone numbers, SSNs, names…) — the model receives placeholders instead of the real values."
+      default: true
+      inject:
+        proxy_config:
+          guardrails:
+            - guardrail_name: presidio-pii-mask
+              litellm_params:
+                guardrail: presidio
+                mode: pre_call
+                default_on: true
+    - id: presidio-pii-block
+      label: "PII blocking (Presidio)"
+      description: "Reject requests that contain high-risk PII (credit card, email, phone, SSN) instead of masking. Uses the same Presidio backend."
+      default: false
+      inject:
+        proxy_config:
+          guardrails:
+            - guardrail_name: presidio-pii-block
+              litellm_params:
+                guardrail: presidio
+                mode: pre_call
+                default_on: true
+                pii_entities_config:
+                  CREDIT_CARD: BLOCK
+                  EMAIL_ADDRESS: BLOCK
+                  PHONE_NUMBER: BLOCK
+                  US_SSN: BLOCK
+    - id: hide-secrets
+      label: "Secret / API-key redaction"
+      description: "Redact leaked secrets and API keys (LiteLLM 'hide-secrets' guardrail, detect-secrets). No extra services."
+      default: false
+      inject:
+        proxy_config:
+          guardrails:
+            - guardrail_name: hide-secrets
+              litellm_params:
+                guardrail: hide-secrets
+                mode: pre_call
+                default_on: true
+    - id: prompt-injection
+      label: "Prompt-injection detection"
+      description: "Heuristic + similarity check that rejects likely prompt-injection attempts (LiteLLM detect_prompt_injection callback). No extra services."
+      default: false
+      inject:
+        proxy_config:
+          litellm_settings:
+            callbacks:
+              - detect_prompt_injection
+            prompt_injection_params:
+              heuristics_check: true
+              similarity_check: true
+              reject_as_response: true
+guide:
+  - title: Choose guardrails & import
+    body: |
+      Select the guardrails to enforce, then import. **Importing** injects your
+      selection into the LiteLLM proxy config and applies the Blueprint CR to the
+      selected cluster — it adds the Blueprint to the SUSE AI Factory catalog, it does
+      not deploy anything yet.
+
+      > All chat and all simulated traffic flow through LiteLLM, so guardrails apply to
+      > both the interactive chat UI and the Airflow traffic generator.
+    action: {type: import}
+  - title: Create the AIWorkload (SUSE AI Factory UI)
+    body: |
+      In the SUSE AI Factory UI, go to **Blueprints → FinOps Multi-Model Gateway
+      (Ollama) → Create AIWorkload**, choose a target **namespace**, and deploy. Wait
+      for Ollama (it pulls three models on first start — llama3.2:1b, qwen2.5:1.5b,
+      qwen2.5:3b), LiteLLM + its Postgres, the two Presidio pods, the LiteLLM exporter,
+      Prometheus, Grafana, OpenCost, and Airflow to be Ready. This is a large workload —
+      give it several minutes. Enter the namespace you chose below.
+    action: {type: namespace-input}
+  - title: Set up teams, then simulate consumption (Airflow)
+    body: |
+      Use the **Airflow UI** button below (enabled once Airflow is Ready) to open Airflow
+      (log in with **admin / admin**). Trigger these DAGs **in order**:
+
+      1. `finops_setup` — creates a virtual key + monthly budget per team
+         (engineering, data-science, marketing, support) in LiteLLM.
+      2. `backfill_history` — writes ~14 days of synthetic spend into Prometheus
+         (remote-write) so the dashboards have instant history.
+      3. `generate_traffic` — fires synthetic multi-model / multi-team chat at LiteLLM
+         (real token consumption). Re-run it (or schedule it) to grow the live trend.
+
+      Raise `TRAFFIC_REQUESTS` / `BACKFILL_DAYS` on the blueprint for more volume/history.
+  - title: Explore the FinOps dashboards (Grafana)
+    body: |
+      Use the **Grafana (FinOps dashboards)** button below (login **admin / admin**) to
+      open the **FinOps — Multi-Model Gateway** dashboard. You'll see:
+
+      - **Token spend (live)** — total spend, blended cost per 1k tokens, spend by model
+        and by team (from the LiteLLM exporter).
+      - **Chargeback & budgets** — per-team budget utilization, tokens by model.
+      - **Historical spend (backfilled)** — daily spend by team / model.
+      - **Infrastructure cost (OpenCost)** — cluster $/hr, projected monthly, CPU vs RAM.
+
+      For a detailed per-workload infra breakdown, open the **OpenCost UI** button.
+  - title: Launch the chat UI
+    body: |
+      Starts `kubectl port-forward` to LiteLLM (4000) and runs the SUSE FinOps chat UI
+      locally. Chat as a team, pick a model, and watch each reply's cost + tokens.
+    action: {type: start-frontend}
+  - title: Chat and watch spend accrue
+    body: |
+      Open the chat UI: pick a **model** and a **team**, and send messages — each reply
+      shows its **cost** and **token usage**, and the session total updates. Every message
+      is real consumption that lands in LiteLLM's spend logs and shows up in Grafana
+      (re-open the dashboard to see the live panels move). Try a message containing an
+      **email** or **credit-card number** to trip a guardrail.
+    action: {type: open-url, url: "http://localhost:8000"}

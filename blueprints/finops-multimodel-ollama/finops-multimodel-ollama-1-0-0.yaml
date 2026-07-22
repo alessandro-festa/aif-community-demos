@@ -1,0 +1,536 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: finops-multimodel-ollama
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: finops-multimodel-ollama-1-0-0
+# FinOps for a multi-model LLM gateway (Ollama, CPU).
+#
+# This blueprint extends the litellm-guardrails gateway into a COST-INSTRUMENTED,
+# multi-model demo and reconciles the two FinOps cost planes an AI platform has:
+#
+#   1. TOKEN spend  — LiteLLM's OSS spend logs (per model / team / virtual key),
+#      turned into real $ by per-token pricing set on each model in the proxy.
+#      Surfaced to Prometheus by a small DB-reading exporter (LiteLLM's own
+#      Prometheus /metrics endpoint is enterprise-gated, so we don't use it).
+#   2. INFRA cost   — OpenCost allocates the $ of the inference pods (CPU / RAM /
+#      PV) and exports it to Prometheus.
+#
+# Both planes land in Prometheus and are visualised in Grafana (a provisioned
+# FinOps dashboard). Apache Airflow drives the simulation: it creates per-team
+# virtual keys + budgets, fires synthetic multi-model traffic (real token
+# consumption), and BACKFILLS synthetic history straight into Prometheus via the
+# remote-write receiver so the dashboards show trends immediately.
+#
+# Chat happens in a small custom local UI (the marketplace's localFrontend) wired
+# straight to LiteLLM /v1 — Open WebUI is intentionally NOT used here.
+#
+# Components (registry sources):
+#   * ollama          — application-collection, CPU, 3 models (different sizes/prices)
+#   * litellm         — suse-ai-registry image (arm64: upstream ghcr multi-arch);
+#                       Presidio (mcr.microsoft.com) + the LiteLLM Prometheus
+#                       exporter (docker.io/nicholascecere/exporter-litellm) ride
+#                       along as extraResources. Bundled standalone Postgres.
+#   * prometheus      — application-collection (prometheus-community chart); remote
+#                       -write receiver + out-of-order ingestion ON for backfill.
+#   * grafana         — application-collection; Prometheus datasource + FinOps
+#                       dashboard provisioned inline.
+#   * opencost        — application-collection; infra $ → Prometheus, queried back
+#                       via the in-namespace Prometheus service.
+#   * apache-airflow  — application-collection; DAGs via git-sync, custom image.
+#
+# The Blueprint Marketplace shows the reused guardrail import WIZARD (see
+# marketplace.yaml): the selected guardrails are injected into the litellm
+# component's proxy_config before this CR is applied.
+#
+# ⚠ Demo only, unsupported. Master keys / DB passwords below are placeholders.
+spec:
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
+  displayName: FinOps Multi-Model Gateway (Ollama, CPU)
+  version: 1.0.0
+  description: |
+    FinOps for a guarded, multi-model LLM gateway. A LiteLLM proxy serves three
+    Ollama models at different per-token prices; guardrails (Presidio PII, secret
+    redaction, prompt-injection) are enforced before the model. Two cost planes are
+    reconciled in Grafana: TOKEN spend (LiteLLM OSS spend logs → a Prometheus
+    exporter, per model / team / virtual key) and INFRASTRUCTURE cost (OpenCost →
+    Prometheus). Apache Airflow creates per-team virtual keys + budgets, fires
+    synthetic multi-model traffic, and backfills synthetic history into Prometheus
+    (remote-write) so the FinOps dashboards populate immediately. Chat runs in a
+    small custom local UI wired to LiteLLM.
+
+    Prerequisites (install on the target cluster BEFORE creating an AIWorkload):
+      * SUSE AI Factory operator (owns the Blueprint / AIWorkload CRDs).
+      * The application-collection ClusterRepo + credentials secret (also the pull
+        secret for the LiteLLM image) and the suse-ai-registry ClusterRepo. NOTE:
+        OpenCost / Prometheus / Grafana require the Application Collection "Prime"
+        entitlement.
+      * A default StorageClass (Ollama, Postgres, Prometheus, Grafana use PVCs).
+      * cert-manager.
+
+    Import via the Blueprint Marketplace (choose guardrails in the wizard), create
+    an AIWorkload from this Blueprint in the AI Factory UI, then follow the guide:
+    run the Airflow DAGs (setup → traffic → backfill), open the Grafana FinOps
+    dashboards, and chat in the local UI to watch spend accrue live.
+  components:
+  # ----------------------------------------------------------------------------
+  # Ollama — three CPU models at different sizes so the FinOps story has price
+  # variety. Reachable at http://ollama:11434.
+  # ----------------------------------------------------------------------------
+  - chartName: ollama
+    chartRepo: application-collection
+    chartVersion: 1.55.0
+    values:
+      fullnameOverride: ollama
+      image:
+        pullPolicy: IfNotPresent
+        registry: dp.apps.rancher.io
+        repository: containers/ollama
+        tag: 0.21.2-11.48
+      ollama:
+        gpu:
+          enabled: false
+          draEnabled: false
+        models:
+          # Pull all three; run only the smallest to warm it (the others load on
+          # demand when LiteLLM routes to them — keeps CPU/RAM sane).
+          pull:
+          - llama3.2:1b
+          - qwen2.5:1.5b
+          - qwen2.5:3b
+          run:
+          - llama3.2:1b
+        port: 11434
+      persistentVolume:
+        enabled: true
+        accessModes:
+        - ReadWriteOnce
+        size: 30Gi
+      resources:
+        limits: {}
+        requests: {}
+      runtimeClassName: ""
+      service:
+        port: 11434
+        type: ClusterIP
+  # ----------------------------------------------------------------------------
+  # LiteLLM — the guarded, multi-model OpenAI-compatible gateway.
+  #   * model_list carries THREE models, each with input/output cost-per-token so
+  #     local models produce real $ in the spend logs (differentiated by size).
+  #   * store_model_in_db: true so per-team VIRTUAL KEYS + budgets work (created by
+  #     the Airflow finops_setup DAG).
+  #   * guardrails: [] baseline — the marketplace wizard appends the selection.
+  #   * extraResources: Presidio analyzer/anonymizer + the LiteLLM Prometheus
+  #     exporter (reads this component's Postgres, exposes spend/token metrics).
+  # Reachable at http://litellm:4000.
+  # ----------------------------------------------------------------------------
+  - chartName: litellm
+    chartRepo: suse-ai-registry
+    chartVersion: 1.81.13
+    values:
+      fullnameOverride: litellm
+      # NOTE: SUSE AI litellm-database image is amd64-only. The upstream ghcr image
+      # is multi-arch — use it for arm64 (Apple-silicon) clusters. On amd64, prefer
+      # registry.suse.com/ai/containers/litellm-database:v1.81.13.
+      image:
+        registry: ghcr.io
+        repository: berriai/litellm-database
+        tag: main-stable
+        pullPolicy: IfNotPresent
+      imagePullSecrets:
+      - application-collection
+      masterkey: sk-guardrails-demo
+      service:
+        type: ClusterIP
+        port: 4000
+      # Bundled single-node Postgres (litellm-database image runs prisma migrations).
+      # NOTE: the standalone Postgres service is named <release>-postgresql, i.e.
+      # "litellm-postgresql". The exporter below points at that host — verify with
+      # `kubectl -n <ns> get svc` and adjust LITELLM_DB_HOST if your release differs.
+      db:
+        deployStandalone: true
+        database: litellm
+      postgresql:
+        architecture: standalone
+        auth:
+          username: litellm
+          database: litellm
+          password: ChangeMe-litellm-db-password
+          postgres-password: ChangeMe-litellm-db-password
+      envVars:
+        PRESIDIO_ANALYZER_API_BASE: "http://presidio-analyzer:3000"
+        PRESIDIO_ANONYMIZER_API_BASE: "http://presidio-anonymizer:3000"
+      proxy_config:
+        general_settings:
+          master_key: os.environ/PROXY_MASTER_KEY
+          # Persist keys/teams so virtual keys + budgets work (chargeback demo).
+          store_model_in_db: true
+        litellm_settings:
+          drop_params: true
+        # Three models at DIFFERENT prices (USD per token). These make the FinOps
+        # dashboards interesting: the same tokens cost 8x more on the 3B than the 1B.
+        model_list:
+        - model_name: llama-3.2-1b
+          litellm_params:
+            model: ollama_chat/llama3.2:1b
+            api_base: http://ollama:11434
+            input_cost_per_token: 0.0000001    # $0.10 / 1M input tokens
+            output_cost_per_token: 0.0000002   # $0.20 / 1M output tokens
+        - model_name: qwen-2.5-1.5b
+          litellm_params:
+            model: ollama_chat/qwen2.5:1.5b
+            api_base: http://ollama:11434
+            input_cost_per_token: 0.0000003    # $0.30 / 1M
+            output_cost_per_token: 0.0000006   # $0.60 / 1M
+        - model_name: qwen-2.5-3b
+          litellm_params:
+            model: ollama_chat/qwen2.5:3b
+            api_base: http://ollama:11434
+            input_cost_per_token: 0.0000008    # $0.80 / 1M
+            output_cost_per_token: 0.0000016   # $1.60 / 1M
+        # Baseline: no guardrails. The marketplace wizard appends entries here.
+        guardrails: []
+      extraResources:
+      # --- Presidio PII engine (public Microsoft images; no SUSE equivalent) ---
+      - apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: presidio-analyzer
+          labels: {app: presidio-analyzer}
+        spec:
+          replicas: 1
+          selector: {matchLabels: {app: presidio-analyzer}}
+          template:
+            metadata:
+              labels: {app: presidio-analyzer}
+            spec:
+              containers:
+              - name: presidio-analyzer
+                image: mcr.microsoft.com/presidio-analyzer:2.2.362
+                ports: [{containerPort: 3000}]
+                readinessProbe:
+                  httpGet: {path: /health, port: 3000}
+                  initialDelaySeconds: 20
+                  periodSeconds: 10
+                resources:
+                  requests: {cpu: 100m, memory: 512Mi}
+      - apiVersion: v1
+        kind: Service
+        metadata:
+          name: presidio-analyzer
+          labels: {app: presidio-analyzer}
+        spec:
+          selector: {app: presidio-analyzer}
+          ports: [{port: 3000, targetPort: 3000}]
+      - apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: presidio-anonymizer
+          labels: {app: presidio-anonymizer}
+        spec:
+          replicas: 1
+          selector: {matchLabels: {app: presidio-anonymizer}}
+          template:
+            metadata:
+              labels: {app: presidio-anonymizer}
+            spec:
+              containers:
+              - name: presidio-anonymizer
+                image: mcr.microsoft.com/presidio-anonymizer:2.2.362
+                ports: [{containerPort: 3000}]
+                readinessProbe:
+                  httpGet: {path: /health, port: 3000}
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                resources:
+                  requests: {cpu: 50m, memory: 128Mi}
+      - apiVersion: v1
+        kind: Service
+        metadata:
+          name: presidio-anonymizer
+          labels: {app: presidio-anonymizer}
+        spec:
+          selector: {app: presidio-anonymizer}
+          ports: [{port: 3000, targetPort: 3000}]
+      # --- LiteLLM Prometheus exporter (reads the LiteLLM Postgres; OSS) ---
+      # LiteLLM's native /metrics spend data is enterprise-gated, so we bridge the
+      # OSS spend logs to Prometheus with this community exporter. Non-SUSE image
+      # (docker.io) — the one FinOps dependency without an AppCo equivalent.
+      - apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: litellm-exporter
+          labels: {app: litellm-exporter}
+        spec:
+          replicas: 1
+          selector: {matchLabels: {app: litellm-exporter}}
+          template:
+            metadata:
+              labels: {app: litellm-exporter}
+              annotations:
+                prometheus.io/scrape: "true"
+                prometheus.io/port: "9090"
+            spec:
+              containers:
+              - name: exporter
+                image: docker.io/nicholascecere/exporter-litellm:latest
+                ports: [{containerPort: 9090}]
+                env:
+                - {name: LITELLM_DB_HOST, value: litellm-postgresql}
+                - {name: LITELLM_DB_PORT, value: "5432"}
+                - {name: LITELLM_DB_NAME, value: litellm}
+                - {name: LITELLM_DB_USER, value: litellm}
+                - {name: LITELLM_DB_PASSWORD, value: ChangeMe-litellm-db-password}
+                - {name: METRICS_PORT, value: "9090"}
+                - {name: METRICS_UPDATE_INTERVAL, value: "15"}
+                - {name: METRICS_SPEND_WINDOW, value: "30d"}
+                readinessProbe:
+                  httpGet: {path: /metrics, port: 9090}
+                  initialDelaySeconds: 15
+                  periodSeconds: 15
+                resources:
+                  requests: {cpu: 50m, memory: 128Mi}
+      - apiVersion: v1
+        kind: Service
+        metadata:
+          name: litellm-exporter
+          labels: {app: litellm-exporter}
+        spec:
+          selector: {app: litellm-exporter}
+          ports: [{name: metrics, port: 9090, targetPort: 9090}]
+  # ----------------------------------------------------------------------------
+  # Prometheus (prometheus-community chart) — the FinOps time-series store.
+  #   * remote-write receiver + 30d out-of-order window ON so the backfill DAG can
+  #     inject BACKDATED samples (instant history).
+  #   * extraScrapeConfigs adds the OpenCost API and the LiteLLM exporter as jobs
+  #     (bare in-namespace service DNS).
+  # Server service: prometheus-server (port 80). Remote-write: /api/v1/write.
+  # ----------------------------------------------------------------------------
+  - chartName: prometheus
+    chartRepo: application-collection
+    chartVersion: 29.13.1
+    values:
+      global:
+        imagePullSecrets: [application-collection]
+      alertmanager:
+        enabled: false
+      prometheus-pushgateway:
+        enabled: false
+      # Disable node-exporter: it binds hostPort 9100 and would COLLIDE with an
+      # existing cluster monitoring stack (e.g. rancher-monitoring). OpenCost doesn't
+      # need it — it emits node-cost metrics itself and reads cadvisor (via the
+      # kubelet) + kube-state-metrics, both of which this Prometheus still scrapes.
+      prometheus-node-exporter:
+        enabled: false
+      # kube-state-metrics stays ON (Deployment, no hostPort) — OpenCost needs it.
+      server:
+        # Argumentless flag → enables the /api/v1/write remote-write receiver.
+        extraArgs:
+          web.enable-remote-write-receiver: null
+        # Accept samples up to 30 days old (the backfill DAG writes historical ts).
+        tsdb:
+          out_of_order_time_window: 30d
+        retention: "30d"
+        persistentVolume:
+          enabled: true
+          size: 12Gi
+      # Scrape OpenCost (infra $) and the LiteLLM exporter (token $). Must be a
+      # string (note the leading | ).
+      extraScrapeConfigs: |
+        - job_name: opencost
+          honor_labels: true
+          scrape_interval: 1m
+          metrics_path: /metrics
+          static_configs:
+            - targets: ['opencost:9003']
+        - job_name: litellm-exporter
+          scrape_interval: 30s
+          metrics_path: /metrics
+          static_configs:
+            - targets: ['litellm-exporter:9090']
+  # ----------------------------------------------------------------------------
+  # Grafana — Prometheus datasource + a provisioned FinOps dashboard (inline).
+  # Reachable at http://grafana (service port 80). Login: admin / admin (demo).
+  # ----------------------------------------------------------------------------
+  - chartName: grafana
+    chartRepo: application-collection
+    chartVersion: 12.7.2
+    values:
+      global:
+        imagePullSecrets: [application-collection]
+      fullnameOverride: grafana
+      adminUser: admin
+      adminPassword: admin
+      service:
+        type: ClusterIP
+        port: 80
+      persistence:
+        enabled: true
+        size: 5Gi
+      datasources:
+        datasources.yaml:
+          apiVersion: 1
+          datasources:
+          - name: Prometheus
+            uid: prometheus
+            type: prometheus
+            url: http://prometheus-server
+            access: proxy
+            isDefault: true
+      dashboardProviders:
+        dashboardproviders.yaml:
+          apiVersion: 1
+          providers:
+          - name: finops
+            orgId: 1
+            folder: FinOps
+            type: file
+            disableDeletion: false
+            editable: true
+            options:
+              path: /var/lib/grafana/dashboards/finops
+      # The FinOps overview dashboard (mirrors grafana/dashboards/finops-overview.json
+      # in this blueprint folder). Live panels use the LiteLLM exporter metrics;
+      # the history panels use finops_daily_* written by the backfill DAG.
+      dashboards:
+        finops:
+          finops-overview:
+            json: |
+              {
+                "title": "FinOps — Multi-Model Gateway",
+                "uid": "finops-overview",
+                "schemaVersion": 39,
+                "editable": true,
+                "time": {"from": "now-30d", "to": "now"},
+                "refresh": "30s",
+                "templating": {"list": []},
+                "panels": [
+                  {"type": "row", "title": "Token spend (live — LiteLLM)", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}},
+                  {"type": "stat", "title": "Total token spend (30d)", "datasource": {"type": "prometheus", "uid": "prometheus"},
+                   "fieldConfig": {"defaults": {"unit": "currencyUSD"}}, "gridPos": {"h": 5, "w": 6, "x": 0, "y": 1},
+                   "targets": [{"expr": "sum(litellm_total_spend)", "refId": "A"}]},
+                  {"type": "stat", "title": "Requests (24h)", "datasource": {"type": "prometheus", "uid": "prometheus"},
+                   "gridPos": {"h": 5, "w": 6, "x": 6, "y": 1},
+                   "targets": [{"expr": "sum(litellm_requests_total)", "refId": "A"}]},
+                  {"type": "stat", "title": "Blended cost / 1k tokens", "datasource": {"type": "prometheus", "uid": "prometheus"},
+                   "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4}}, "gridPos": {"h": 5, "w": 6, "x": 12, "y": 1},
+                   "targets": [{"expr": "sum(litellm_total_spend) / (sum(litellm_total_tokens) / 1000)", "refId": "A"}]},
+                  {"type": "stat", "title": "Total tokens", "datasource": {"type": "prometheus", "uid": "prometheus"},
+                   "gridPos": {"h": 5, "w": 6, "x": 18, "y": 1},
+                   "targets": [{"expr": "sum(litellm_total_tokens)", "refId": "A"}]},
+                  {"type": "timeseries", "title": "Spend by model", "datasource": {"type": "prometheus", "uid": "prometheus"},
+                   "fieldConfig": {"defaults": {"unit": "currencyUSD"}}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+                   "targets": [{"expr": "sum by (model) (litellm_total_spend)", "legendFormat": "{{model}}", "refId": "A"}]},
+                  {"type": "timeseries", "title": "Spend by team", "datasource": {"type": "prometheus", "uid": "prometheus"},
+                   "fieldConfig": {"defaults": {"unit": "currencyUSD"}}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+                   "targets": [{"expr": "sum by (team_alias) (litellm_team_spend)", "legendFormat": "{{team_alias}}", "refId": "A"}]},
+                  {"type": "row", "title": "Chargeback & budgets", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14}},
+                  {"type": "bargauge", "title": "Budget utilization by team", "datasource": {"type": "prometheus", "uid": "prometheus"},
+                   "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "orange", "value": 75}, {"color": "red", "value": 90}]}}},
+                   "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15},
+                   "targets": [{"expr": "litellm_budget_utilization{entity_type=\"team\"}", "legendFormat": "{{entity_alias}}", "refId": "A"}]},
+                  {"type": "timeseries", "title": "Tokens by model", "datasource": {"type": "prometheus", "uid": "prometheus"},
+                   "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15},
+                   "targets": [{"expr": "sum by (model) (litellm_total_tokens)", "legendFormat": "{{model}}", "refId": "A"}]},
+                  {"type": "row", "title": "Historical spend (backfilled)", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23}},
+                  {"type": "timeseries", "title": "Daily spend by team", "datasource": {"type": "prometheus", "uid": "prometheus"},
+                   "fieldConfig": {"defaults": {"unit": "currencyUSD", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}},
+                   "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+                   "targets": [{"expr": "sum by (team_alias) (finops_daily_spend_usd)", "legendFormat": "{{team_alias}}", "refId": "A"}]},
+                  {"type": "timeseries", "title": "Daily spend by model", "datasource": {"type": "prometheus", "uid": "prometheus"},
+                   "fieldConfig": {"defaults": {"unit": "currencyUSD", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}},
+                   "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+                   "targets": [{"expr": "sum by (model) (finops_daily_spend_usd)", "legendFormat": "{{model}}", "refId": "A"}]},
+                  {"type": "row", "title": "Infrastructure cost (OpenCost)", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 32}},
+                  {"type": "stat", "title": "Cluster cost ($/hr)", "datasource": {"type": "prometheus", "uid": "prometheus"},
+                   "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 3}}, "gridPos": {"h": 5, "w": 6, "x": 0, "y": 33},
+                   "targets": [{"expr": "sum(node_total_hourly_cost)", "refId": "A"}]},
+                  {"type": "stat", "title": "Projected monthly infra $", "datasource": {"type": "prometheus", "uid": "prometheus"},
+                   "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2}}, "gridPos": {"h": 5, "w": 6, "x": 6, "y": 33},
+                   "targets": [{"expr": "sum(node_total_hourly_cost) * 730", "refId": "A"}]},
+                  {"type": "timeseries", "title": "Node cost breakdown ($/hr)", "datasource": {"type": "prometheus", "uid": "prometheus"},
+                   "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4}}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 33},
+                   "targets": [
+                     {"expr": "sum(node_cpu_hourly_cost)", "legendFormat": "CPU", "refId": "A"},
+                     {"expr": "sum(node_ram_hourly_cost)", "legendFormat": "RAM", "refId": "B"}
+                   ]}
+                ]
+              }
+  # ----------------------------------------------------------------------------
+  # OpenCost — infra cost allocation → Prometheus, queried back from the
+  # in-namespace Prometheus. We use `external` mode with the BARE service URL so we
+  # don't have to hardcode the (user-chosen) AIWorkload namespace. API on :9003,
+  # UI on :9090. Reachable at http://opencost:9003.
+  # ----------------------------------------------------------------------------
+  - chartName: opencost
+    chartRepo: application-collection
+    chartVersion: 2.5.27
+    values:
+      global:
+        imagePullSecrets: [application-collection]
+      opencost:
+        prometheus:
+          internal:
+            enabled: false
+          # Bare in-namespace DNS → resolves to prometheus-server in this namespace,
+          # regardless of which namespace the AIWorkload is created in.
+          external:
+            enabled: true
+            url: http://prometheus-server:80
+        ui:
+          enabled: true
+  # ----------------------------------------------------------------------------
+  # Apache Airflow — orchestrates the FinOps simulation. DAGs via git-sync.
+  #   finops_setup    → teams + virtual keys + budgets in LiteLLM
+  #   generate_traffic→ synthetic multi-model / multi-team chat (real token spend)
+  #   backfill_history→ backdated synthetic spend into Prometheus (remote-write)
+  # Uses the STOCK application-collection apache-airflow image — the DAGs only need
+  # `requests` (already present) and the remote-write client is pure-stdlib
+  # (see dags/common.py), so no custom image is needed.
+  # ----------------------------------------------------------------------------
+  - chartName: apache-airflow
+    chartRepo: application-collection
+    chartVersion: 1.22.0
+    values:
+      executor: LocalExecutor
+      # Pin generated secrets so the pod template is STABLE across Fleet reconciles
+      # (see fraud-detection blueprint for the rationale). Demo-fixed values.
+      fernetKey: "Nv3aCd-3agJbJG1QxzKMezX5pJZB4fRpZIrqhdS-MA4="
+      jwtSecret: "72873f21d1682ddc023f0815344d1cdc0157e59c9c5480bcb430686d6ed466d3"
+      webserverSecretKey: "bb3ea2e3f0a3ad96a2f440ab3ca4e3406985aaf72182662ebd339f53a7a28a7a"
+      redis:
+        enabled: false
+      flower:
+        enabled: false
+      dags:
+        gitSync:
+          enabled: true
+          repo: https://github.com/alessandro-festa/aif-community-demos.git
+          branch: main
+          ref: main
+          rev: HEAD
+          depth: 1
+          subPath: blueprints/finops-multimodel-ollama/dags
+          period: 30s
+      env:
+      - name: LITELLM_BASE_URL
+        value: http://litellm:4000
+      - name: LITELLM_MASTER_KEY
+        value: sk-guardrails-demo
+      - name: PROM_REMOTE_WRITE_URL
+        value: http://prometheus-server:80/api/v1/write
+      - name: TRAFFIC_REQUESTS
+        value: "40"
+      - name: BACKFILL_DAYS
+        value: "14"
+      ingress:
+        apiServer:
+          enabled: true
+          ingressClassName: nginx
+          annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          hosts:
+          - name: finops-airflow
+            tls:
+              enabled: true
