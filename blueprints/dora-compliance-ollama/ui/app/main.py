@@ -35,6 +35,7 @@ import json
 import math
 import os
 import re
+import time
 from pathlib import Path
 
 import psycopg2
@@ -63,9 +64,17 @@ LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "300"))
 # Max chars of a tool result fed back into the model — keeps the agent context (and thus
 # per-step generation time) small on CPU. The UI still shows full data via its own endpoints.
 TOOL_RESULT_MAX = int(os.environ.get("TOOL_RESULT_MAX", "1800"))
-AGENT_MAX_STEPS = int(os.environ.get("AGENT_MAX_STEPS", "5"))
+AGENT_MAX_STEPS = int(os.environ.get("AGENT_MAX_STEPS", "4"))
+# Hard wall-clock budget for one /api/agent request. On a slow CPU each LLM call is ~1-3
+# min; without a cap a multi-step turn can run long enough that the browser drops the
+# connection ("Failed to fetch"). When exceeded we stop the tool loop and return.
+AGENT_DEADLINE = int(os.environ.get("AGENT_DEADLINE", "220"))
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
+# Orchestrator DAG that runs every stage IN ORDER (see dags/run_pipeline.py). "Run the whole
+# pipeline" triggers this single DAG rather than firing the stages concurrently (they have
+# data dependencies and would fail out of order).
+ORCHESTRATOR_DAG = "run_pipeline"
 # The pipeline DAGs, in run order — used by the agent's trigger_pipeline tool.
 PIPELINE_DAGS = ["simulate_incidents", "classify_and_load", "build_marts",
                  "index_incidents", "check_compliance_alerts"]
@@ -292,23 +301,27 @@ def tool_get_vendor_risk(limit: int = 10) -> dict:
 
 
 def tool_trigger_pipeline(dag_id: str = "") -> dict:
+    target = (dag_id or ORCHESTRATOR_DAG).strip()
+    if target not in PIPELINE_DAGS and target != ORCHESTRATOR_DAG:
+        return {"error": f"unknown dag_id; omit to run the whole pipeline, "
+                         f"or pass one stage of {PIPELINE_DAGS}"}
     try:
-        if not dag_id:
-            triggered = [{"dag_id": d, "run": airflow_trigger(d).get("dag_run_id")}
-                         for d in PIPELINE_DAGS]
-            return {"triggered": triggered,
-                    "note": "DAGs triggered; they run in dependency order — poll status."}
-        if dag_id not in PIPELINE_DAGS:
-            return {"error": f"unknown dag_id; choose one of {PIPELINE_DAGS} or omit for all"}
-        run = airflow_trigger(dag_id)
-        return {"dag_id": dag_id, "run_id": run.get("dag_run_id"), "state": run.get("state")}
+        run = airflow_trigger(target)
+        whole = target == ORCHESTRATOR_DAG
+        return {
+            "dag_id": target, "run_id": run.get("dag_run_id"), "state": run.get("state"),
+            "note": ("The whole pipeline was started; it runs all 5 stages IN ORDER in the "
+                     "background and takes a few minutes. Do NOT call pipeline_status now — "
+                     "just tell the user it has started and to ask for status in a minute."
+                     if whole else "Stage triggered; it runs in the background."),
+        }
     except Exception as e:
         return {"error": f"Airflow trigger failed: {e}"}
 
 
 def tool_pipeline_status() -> dict:
     try:
-        return {"status": [airflow_latest_run(d) for d in PIPELINE_DAGS]}
+        return {"status": [airflow_latest_run(d) for d in [ORCHESTRATOR_DAG] + PIPELINE_DAGS]}
     except Exception as e:
         return {"error": f"Airflow status failed: {e}"}
 
@@ -344,8 +357,9 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}}}}},
     {"type": "function", "function": {
         "name": "trigger_pipeline",
-        "description": "Run the DORA pipeline via the Airflow REST API. Omit dag_id to run all "
-                       "stages in order, or pass one of: " + ", ".join(PIPELINE_DAGS) + ".",
+        "description": "Run the DORA pipeline via the Airflow REST API. Omit dag_id to run the "
+                       "WHOLE pipeline in the correct order (recommended). Or pass one stage: "
+                       + ", ".join(PIPELINE_DAGS) + ". Call this at most once per reply.",
         "parameters": {"type": "object", "properties": {"dag_id": {"type": "string"}}}}},
     {"type": "function", "function": {
         "name": "pipeline_status",
@@ -370,7 +384,9 @@ AGENT_SYSTEM = (
     "internal log only). Use the provided tools to look up real data before answering — never "
     "invent incident numbers, providers or deadlines. You may run or re-run the data pipeline "
     "via the tools when asked. Be concise, factual, and cite incident_ids and providers you "
-    "found. When a reporting deadline is breached, say so plainly."
+    "found. When a reporting deadline is breached, say so plainly. Call each tool at most "
+    "once per reply, and after triggering the pipeline, report that it has started and STOP — "
+    "do not poll pipeline_status in the same reply (the DAGs take minutes)."
 )
 
 ANALYST_SYSTEM = (
@@ -505,6 +521,7 @@ def agent(req: AgentReq):
                 *[m for m in req.history if m.get("role") in ("user", "assistant")],
                 {"role": "user", "content": req.message}]
     trace: list[dict] = []
+    deadline = time.monotonic() + AGENT_DEADLINE
     try:
         for _step in range(AGENT_MAX_STEPS):  # bounded agent loop
             msg = chat(messages, tools=TOOLS)
@@ -542,10 +559,12 @@ def agent(req: AgentReq):
                                  # the model as-is; otherwise it echoes literal "€".
                                  "content": json.dumps(result, default=str,
                                                        ensure_ascii=False)[:TOOL_RESULT_MAX]})
-        # Ran out of steps — ask for a final answer without tools.
-        final = chat(messages)
+            if time.monotonic() > deadline:
+                break  # out of time budget — stop looping and synthesise what we have
+        # Steps or time budget exhausted — one final, bounded answer without tools.
+        final = chat(messages, max_tokens=350)
         return {"reply": (final.get("content") or "").strip() or
-                "I gathered data but couldn't summarise — see the trace.", "trace": trace}
+                "I gathered the data — see the tool trace above for the results.", "trace": trace}
     except requests.HTTPError as e:
         raise HTTPException(502, f"LLM/tool call failed: {e}")
     except Exception as e:
