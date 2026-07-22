@@ -69,13 +69,16 @@ def _admin_headers() -> dict:
 
 def litellm_post(path: str, body: dict, ok_conflict: bool = False) -> dict:
     """POST to the LiteLLM admin API. When ok_conflict, swallow 400/409 (already
-    exists) so setup DAGs are idempotent."""
+    exists) so setup DAGs are idempotent. On other errors, raise WITH the response
+    body so LiteLLM's actual message (e.g. 'admin only route', 'DB not connected')
+    shows up in the Airflow logs instead of a bare HTTPError."""
     r = requests.post(
         f"{LITELLM_BASE_URL}{path}", json=body, headers=_admin_headers(), timeout=HTTP_TIMEOUT
     )
     if ok_conflict and r.status_code in (400, 409):
-        return {"status": "exists", "detail": r.text[:200]}
-    r.raise_for_status()
+        return {"status": "exists", "detail": r.text[:300]}
+    if not r.ok:
+        raise RuntimeError(f"LiteLLM POST {path} -> HTTP {r.status_code}: {r.text[:600]}")
     return r.json() if r.content else {}
 
 

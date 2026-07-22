@@ -31,13 +31,15 @@ LITELLM_MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "sk-guardrails-demo")
 HTTP_TIMEOUT = 120
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
-# Teams + their FIXED virtual keys (created by the finops_setup DAG). Chatting as a
-# team uses its key so LiteLLM attributes the spend to that team for chargeback.
+# Teams for the selector. The chat UI calls LiteLLM with the MASTER key and attaches
+# a team tag (x-litellm-tags) for attribution — virtual key values are hashed in the
+# DB and can't be retrieved after creation, so the UI can't use per-team keys. Team +
+# per-key spend is exercised by the generate_traffic DAG (which holds the keys).
 TEAMS = [
-    {"alias": "engineering",  "key": "sk-team-eng",     "use_case": "code-assist"},
-    {"alias": "data-science", "key": "sk-team-ds",      "use_case": "analysis"},
-    {"alias": "marketing",    "key": "sk-team-mkt",     "use_case": "copywriting"},
-    {"alias": "support",      "key": "sk-team-support", "use_case": "helpdesk"},
+    {"alias": "engineering",  "use_case": "code-assist"},
+    {"alias": "data-science", "use_case": "analysis"},
+    {"alias": "marketing",    "use_case": "copywriting"},
+    {"alias": "support",      "use_case": "helpdesk"},
 ]
 # Fallback model list if /v1/models can't be reached (matches the Blueprint CR).
 FALLBACK_MODELS = ["llama-3.2-1b", "qwen-2.5-1.5b", "qwen-2.5-3b"]
@@ -95,7 +97,7 @@ def chat(req: ChatReq):
         r = requests.post(
             f"{LITELLM_BASE_URL}/v1/chat/completions",
             headers={
-                "Authorization": f"Bearer {team['key']}",
+                "Authorization": f"Bearer {LITELLM_MASTER_KEY}",
                 "Content-Type": "application/json",
                 "x-litellm-tags": f"team:{team['alias']},use_case:{team['use_case']}",
             },

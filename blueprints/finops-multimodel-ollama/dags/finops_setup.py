@@ -2,16 +2,21 @@
 DAG: finops_setup
 
 Create the per-team **virtual keys** and **budgets** in LiteLLM that make the
-chargeback / budget FinOps use cases work. Idempotent: re-running reuses an existing
-team (matched by alias) and ignores keys that already exist.
+chargeback / budget FinOps use cases work. For each team it creates (or reuses) a
+team with a monthly budget, then generates a virtual key scoped to that team.
 
-Teams, fixed key values and budgets are defined in common.TEAMS. The fixed key
-values mean the traffic DAG (and the local chat UI) can use them directly with no
-state to pass around.
+LiteLLM's /key/generate RETURNS a generated key value (you can't supply your own —
+that returns 403). The key values are therefore captured here and stored in the
+Airflow Variable `finops_team_keys` (JSON: {team_alias: {key, team_id, budget,
+use_case}}) so the generate_traffic DAG can use them. The local chat UI doesn't need
+them — it uses the master key plus a team tag for attribution.
 
 Requires the litellm component's `store_model_in_db: true` (set in the Blueprint CR).
+Run this before generate_traffic.
 """
 from __future__ import annotations
+
+import json
 
 import pendulum
 from airflow.decorators import dag, task
@@ -23,6 +28,13 @@ from common import (
     wait_for_litellm,
     _admin_headers,  # noqa: PLC2701 - internal helper reuse within the DAG package
 )
+
+try:  # Airflow 3 task SDK, with a fallback for older imports.
+    from airflow.sdk import Variable
+except ImportError:  # pragma: no cover
+    from airflow.models import Variable
+
+TEAM_KEYS_VAR = "finops_team_keys"
 
 
 @dag(
@@ -53,9 +65,11 @@ def finops_setup():
                     return t.get("team_id") or info.get("team_id")
             return None
 
-        created = {}
-        for team_alias, key, budget, use_case, _weight in TEAMS:
-            # Team (reuse if it already exists).
+        mapping: dict[str, dict] = {}
+        # Unique-ish suffix so key_alias never collides on re-runs (a fresh key each run).
+        stamp = pendulum.now("UTC").int_timestamp
+        for team_alias, _legacy_key, budget, use_case, _weight in TEAMS:
+            # Team (reuse if it already exists), with a monthly budget for chargeback.
             team_id = team_id_by_alias(team_alias)
             if not team_id:
                 resp = litellm_post(
@@ -65,25 +79,31 @@ def finops_setup():
                 )
                 team_id = resp.get("team_id") or team_id_by_alias(team_alias)
 
-            # Virtual key with a FIXED value, scoped to the team + a chargeback tag.
-            litellm_post(
+            # Virtual key scoped to the team. LiteLLM generates + returns the value.
+            keyresp = litellm_post(
                 "/key/generate",
                 {
-                    "key": key,
-                    "key_alias": f"{team_alias}-key",
+                    "key_alias": f"{team_alias}-key-{stamp}",
                     "team_id": team_id,
                     "max_budget": budget,
                     "budget_duration": "30d",
                     "metadata": {"team": team_alias, "use_case": use_case},
-                    "tags": [f"team:{team_alias}", f"use_case:{use_case}"],
                 },
-                ok_conflict=True,
             )
-            created[team_alias] = {"team_id": team_id, "budget": budget, "use_case": use_case}
+            mapping[team_alias] = {
+                "key": keyresp.get("key"),
+                "team_id": team_id,
+                "budget": budget,
+                "use_case": use_case,
+            }
 
-        return created
+        # Persist for generate_traffic (contains secrets — Variable, not returned/logged).
+        Variable.set(TEAM_KEYS_VAR, json.dumps(mapping))
+        # Return a redacted summary for the task log.
+        return {t: {"team_id": v["team_id"], "budget": v["budget"], "has_key": bool(v["key"])}
+                for t, v in mapping.items()}
 
-    wait() >> create_teams_and_keys()  # wait for the proxy, then create teams/keys
+    wait() >> create_teams_and_keys()
 
 
 finops_setup()

@@ -19,6 +19,7 @@ Set TRAFFIC_REQUESTS to change the volume; schedule the DAG to build an ongoing 
 """
 from __future__ import annotations
 
+import json
 import random
 
 import pendulum
@@ -27,12 +28,20 @@ from airflow.decorators import dag, task
 
 from common import (
     LITELLM_BASE_URL,
+    LITELLM_MASTER_KEY,
     MODELS,
     TEAMS,
     TRAFFIC_REQUESTS,
     HTTP_TIMEOUT,
     wait_for_litellm,
 )
+
+try:  # Airflow 3 task SDK, with a fallback for older imports.
+    from airflow.sdk import Variable
+except ImportError:  # pragma: no cover
+    from airflow.models import Variable
+
+TEAM_KEYS_VAR = "finops_team_keys"
 
 # Prompt pools keyed by use_case, plus a few long prompts to create token variety.
 PROMPTS = {
@@ -87,13 +96,20 @@ def generate_traffic():
 
     @task
     def fire() -> dict:
+        # Per-team virtual keys created by finops_setup. If missing, fall back to the
+        # master key (spend still tagged, but not attributed to a team) and warn.
+        team_keys = json.loads(Variable.get(TEAM_KEYS_VAR, default_var="{}"))
+        used_fallback = not team_keys
+
         sent, blocked, errors = 0, 0, 0
         total_cost, total_tokens = 0.0, 0
         by_model: dict[str, int] = {}
         by_team: dict[str, float] = {}
 
         for _ in range(TRAFFIC_REQUESTS):
-            team_alias, key, _budget, use_case, _tw = _weighted(TEAMS, 4)
+            team_alias, _legacy_key, _budget, use_case, _tw = _weighted(TEAMS, 4)
+            entry = team_keys.get(team_alias) or {}
+            key = entry.get("key") or LITELLM_MASTER_KEY
             model_name, _in, _out, _mw = _weighted(MODELS, 3)
             prompt = random.choice(PROMPTS[use_case])
             if random.random() < 0.35:  # ~1/3 are long (more tokens → more cost)
@@ -142,6 +158,8 @@ def generate_traffic():
             "total_tokens": total_tokens,
             "by_model": by_model,
             "by_team": {k: round(v, 6) for k, v in by_team.items()},
+            "warning": ("no finops_team_keys Variable — ran on the master key; "
+                        "run finops_setup for per-team attribution") if used_fallback else None,
         }
 
     wait() >> fire()
