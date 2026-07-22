@@ -58,6 +58,15 @@ localFrontend:
     - {name: ollama,     service: ollama,     local: 11434, remote: 11434}
     - {name: milvus,     service: milvus,     local: 19530, remote: 19530}
     - {name: support-db, service: support-db, local: 5433,  remote: 5432}
+# Chat/base LLM size (CPU). The DAG builds "support-agent" from this; the vision
+# (qwen2.5vl:3b) and embedding (nomic-embed-text) models stay pinned. No frontend
+# envKey — the app uses the built support-agent model.
+modelSizes:
+  default: small
+  replace: "{{MODEL}}"
+  options:
+    - {id: small, label: "1.5B — faster (CPU)", model: "qwen2.5:1.5b"}
+    - {id: large, label: "3B — higher quality", model: "qwen2.5:3b"}
 guide:
   - title: Choose dataset size & import
     body: |

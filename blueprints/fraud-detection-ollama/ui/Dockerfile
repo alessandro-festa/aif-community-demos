@@ -20,7 +20,7 @@ EXPOSE 8000
 ENV POSTGRES_URI=postgresql://fraud:fraud@fraud-db:5432/fraud \
     MILVUS_URI=http://milvus:19530 \
     OPENAI_BASE_URL=http://ollama:11434/v1 \
-    LLM_MODEL=qwen2.5:3b \
+    LLM_MODEL=qwen2.5:1.5b \
     OPENAI_API_KEY=EMPTY
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

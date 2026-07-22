@@ -39,8 +39,8 @@ Prebuilt binaries are published as a GitHub Release on
 ```bash
 # pick the asset for your platform:
 #   bpm-linux-amd64   bpm-linux-arm64   bpm-darwin-arm64   bpm-darwin-amd64
-curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.3.0/bpm-linux-amd64
-curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.3.0/SHA256SUMS
+curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.4.0/bpm-linux-amd64
+curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.4.0/SHA256SUMS
 
 # verify, then make it runnable:
 shasum -a 256 -c SHA256SUMS --ignore-missing
@@ -102,6 +102,21 @@ under `~/.suse-bp-marketplace/venvs/`.
   shows a checklist whose selected options are deep-merged into a target component's
   Helm values in the Blueprint CR before `kubectl apply` (e.g. choosing LiteLLM
   guardrails). Blueprints without a wizard import unchanged.
+- **Bulk import** — a catalog **Select** mode lets you tick several blueprints and import
+  them all at once into a chosen cluster (blueprints requiring setup inputs are excluded).
+- **Per-blueprint target cluster** — the guided demo has a **Target cluster** selector, so a
+  blueprint's import, prerequisite/component-access checks and local frontend all run against
+  the cluster you pick (e.g. a Rancher downstream cluster), not just the global default.
+- **Model size** — a CPU blueprint may declare `modelSizes`; the guided demo then shows a
+  **Model** selector (e.g. small/large) whose choice is applied to both the import (the model
+  ollama pulls) and the local frontend (the model it requests).
+- **Import a kubeconfig** — merge extra kubeconfigs from **Settings** (paste YAML or a file
+  path) so their contexts become selectable, without launching with a custom `KUBECONFIG`.
+- **Rancher login** — connect to a Rancher server with an API token in **Settings** to list its
+  downstream clusters and import their kubeconfigs; imported clusters then appear as selectable
+  contexts everywhere (the token is kept in memory only, never written to disk).
+- **Run several frontends at once** — each local frontend gets random local ports (uvicorn +
+  its port-forwards), so multiple blueprints' UIs can run simultaneously without collisions.
 - **Dark / light theme** toggle (persisted).
 
 ## How a blueprint is described
@@ -123,9 +138,12 @@ The embedded UI talks to these endpoints (SSE where a live log stream is produce
 |----------|---------|
 | `GET /api/contexts` | kube contexts + AI Factory readiness |
 | `GET /api/settings`, `PUT /api/settings` | read / update config (PUT resyncs git on repo/ref change) |
+| `POST /api/kubeconfig/import` / `.../remove` | merge / drop an extra kubeconfig |
+| `POST /api/rancher/connect` | list a Rancher server's downstream clusters (token in memory) |
+| `POST /api/rancher/clusters/import` | generate + merge a downstream cluster's kubeconfig |
 | `GET /api/catalog` | list blueprints |
-| `GET /api/blueprints/{id}/prereqs` | run prerequisite checks |
-| `POST /api/blueprints/{id}/import` *(SSE)* | `kubectl apply` the Blueprint CR |
+| `GET /api/blueprints/{id}/prereqs` | run prerequisite checks (accepts `?context=`) |
+| `POST /api/blueprints/{id}/import` *(SSE)* | `kubectl apply` the Blueprint CR (accepts `context`, `modelSize`) |
 | `POST /api/blueprints/{id}/frontend/start` *(SSE)* / `.../frontend/stop` | local frontend lifecycle |
 | `POST /api/blueprints/{id}/service-status` | component service readiness |
 | `POST /api/blueprints/{id}/component-ui/start` / `.../component-ui/stop` | in-cluster component-UI port-forward |

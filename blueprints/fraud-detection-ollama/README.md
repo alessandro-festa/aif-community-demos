@@ -3,7 +3,7 @@
 A financial-crime / money-laundering / anomaly-detection blueprint. **Apache Airflow**
 generates and manipulates a synthetic fraud graph, **trains an XGBoost classifier** on the
 labelled data, and indexes behavioural feature vectors in **Milvus** for anomaly detection; a
-local SUSE-styled investigator UI uses a local **LLM (Ollama, `qwen2.5:3b`)** as an **AML
+local SUSE-styled investigator UI uses a local **LLM (Ollama, `qwen2.5:1.5b`)** as an **AML
 analyst** to classify and explain flagged accounts.
 
 > **Inspired by and with thanks to [SantanderAI/gen-fraud-graph](https://github.com/SantanderAI/gen-fraud-graph)**
@@ -23,7 +23,7 @@ Blueprint CR: [`fraud-detection-ollama-1-0-0.yaml`](fraud-detection-ollama-1-0-0
 | **Apache Airflow** | `apache-airflow` `1.22.0` | orchestrates generate → train → anomaly (DAGs via git-sync) |
 | **PostgreSQL** | `postgresql` `0.6.0` (`fraud-db`) | accounts, transactions, labels, scores, flagged accounts |
 | **Milvus** | `milvus` `5.0.22` | per-account behavioural feature vectors for anomaly detection |
-| **Ollama** | `ollama` `1.55.0` | `qwen2.5:3b` — the AML analyst LLM, CPU |
+| **Ollama** | `ollama` `1.55.0` | `qwen2.5:1.5b` — the AML analyst LLM, CPU |
 | **Investigator UI** | — (local) | FastAPI + SUSE dashboard in [`ui/`](ui/), runs locally |
 
 ## Pipeline (Airflow DAGs, in [`dags/`](dags/))

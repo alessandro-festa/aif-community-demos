@@ -58,9 +58,9 @@ spec:
           # — accepts image input (unlike the text-only alibayram/* tags). No HF token
           # needed. Use :Q8_0 (5 GB) or :F16 (8.6 GB) for higher fidelity.
           pull:
-          - dcarrascosa/medgemma-1.5-4b-it:Q4_K_M
+          - "{{MODEL}}"
           run:
-          - dcarrascosa/medgemma-1.5-4b-it:Q4_K_M
+          - "{{MODEL}}"
         port: 11434
       persistentVolume:
         enabled: true

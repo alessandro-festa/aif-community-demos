@@ -26,13 +26,21 @@ localFrontend:
   env:
     OPENAI_BASE_URL: "http://localhost:11434/v1"
     OPENAI_API_KEY: "EMPTY"
-    DEFAULT_MODEL: "dcarrascosa/medgemma-1.5-4b-it:Q4_K_M"
+    DEFAULT_MODEL: "{{MODEL}}"
     MILVUS_URI: "http://localhost:19530"
     CLIP_MODEL: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
     IMG_COLLECTION: "xray_embeddings"
   portForwards:
     - {name: ollama, service: ollama, local: 11434, remote: 11434}
     - {name: milvus, service: milvus, local: 19530, remote: 19530}
+# MedGemma quantization (same 4B medical VLM) — smaller quant = faster on CPU.
+modelSizes:
+  default: small
+  envKey: DEFAULT_MODEL
+  replace: "{{MODEL}}"
+  options:
+    - {id: small, label: "Q4 quant — faster (CPU)", model: "dcarrascosa/medgemma-1.5-4b-it:Q4_K_M"}
+    - {id: large, label: "Q8 quant — higher fidelity", model: "dcarrascosa/medgemma-1.5-4b-it:Q8_0"}
 guide:
   - title: Import the blueprint
     body: |

@@ -146,6 +146,31 @@ label { display: block; font-size: .72rem; color: var(--text-muted); text-transf
 .card h3 { margin: 0 0 8px; font-size: 1rem; }
 .card p { margin: 0 0 12px; color: var(--text-muted); font-size: .88rem; }
 
+/* Catalog multi-select (bulk import). */
+.card.selectable { position: relative; cursor: pointer; transition: border-color .15s; }
+.card.selectable:hover { border-color: var(--accent); }
+.card.selectable h3 { padding-right: 28px; }
+.card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(254,124,63,.35); }
+.card.disabled { cursor: not-allowed; opacity: .55; }
+.card.disabled:hover { border-color: var(--border); }
+.card-check {
+  position: absolute; top: 14px; right: 14px; z-index: 1;
+  width: 18px; height: 18px; pointer-events: none; /* card handles the click */
+}
+/* Sticky bulk-select action bar under the catalog filters. */
+.select-bar {
+  position: sticky; top: 8px; z-index: 5;
+  display: flex; align-items: center; gap: 10px;
+  background: var(--surface); border: 1px solid var(--accent); border-radius: var(--radius);
+  padding: 10px 14px; margin: 0 0 16px;
+}
+.bulk-row + .bulk-row { margin-top: 12px; }
+
+/* Per-blueprint "Target cluster" selector (guided demo). */
+.cluster-select { margin: 0; }
+.cluster-select select { width: auto; min-width: 240px; max-width: 100%; margin-top: 5px; }
+.guide-cluster { margin: 0 0 16px; }
+
 .tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .badge {
   display: inline-block; padding: 2px 9px; border-radius: 999px;

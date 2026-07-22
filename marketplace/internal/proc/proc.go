@@ -256,7 +256,7 @@ func (m *Manager) List() []*Session {
 // port-forwards + uvicorn. It blocks through venv setup and initial launch,
 // streaming to emit, and returns once the frontend is listening (or on error).
 // The port-forwards + uvicorn keep running until Stop.
-func (m *Manager) StartFrontend(bp catalog.Blueprint, kubeCtx, namespace string, emit func(string)) (*Session, error) {
+func (m *Manager) StartFrontend(bp catalog.Blueprint, kubeCtx, namespace string, envOverride map[string]string, emit func(string)) (*Session, error) {
 	lf := bp.LocalFrontend
 	if lf == nil {
 		return nil, fmt.Errorf("blueprint %q has no localFrontend", bp.ID)
@@ -314,10 +314,38 @@ func (m *Manager) StartFrontend(bp catalog.Blueprint, kubeCtx, namespace string,
 		}
 	}
 
+	// Every local port (the forwards + uvicorn) is picked at random from the free
+	// range so multiple blueprint frontends can run at once without colliding —
+	// even when their backends live on different clusters, the *local* bind ports
+	// would otherwise clash. pick() hands out ports distinct within this call.
+	used := map[int]bool{}
+	pick := func() (int, error) {
+		for range 100 {
+			p, err := freeLocalPort()
+			if err != nil {
+				return 0, err
+			}
+			if !used[p] {
+				used[p] = true
+				return p, nil
+			}
+		}
+		return 0, fmt.Errorf("no free local port available")
+	}
+
 	// 3. port-forwards (supervised — kubectl port-forward exits on a connection
 	// reset / pod restart and does NOT reconnect, so we restart it for the life
-	// of the session).
+	// of the session). Each gets a random local port; remap records old->new so we
+	// can rewrite the env vars that reference the original local port.
+	remap := map[int]int{}
 	for _, pf := range lf.PortForwards {
+		local, err := pick()
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		remap[pf.Local] = local
+		pf.Local = local
 		spec := fmt.Sprintf("%d:%d", pf.Local, pf.Remote)
 		log(fmt.Sprintf("port-forward %s svc/%s %s (ns %s) [supervised]", pf.Name, pf.Service, spec, namespace))
 		go supervisePortForward(ctx, hub, kubeCtx, namespace, pf)
@@ -325,10 +353,11 @@ func (m *Manager) StartFrontend(bp catalog.Blueprint, kubeCtx, namespace string,
 	// Give the forwards a moment to establish before the readiness check.
 	time.Sleep(2 * time.Second)
 
-	// 4. uvicorn (long-running).
-	port := lf.Port
-	if port == 0 {
-		port = 8000
+	// 4. uvicorn (long-running) on its own random port.
+	port, err := pick()
+	if err != nil {
+		cancel()
+		return nil, err
 	}
 	uvicorn := filepath.Join(venvDir, "bin", "uvicorn")
 	entry := lf.Entry
@@ -336,9 +365,35 @@ func (m *Manager) StartFrontend(bp catalog.Blueprint, kubeCtx, namespace string,
 		entry = "app.main:app"
 	}
 	log(fmt.Sprintf("Starting uvicorn %s on :%d", entry, port))
-	env := os.Environ()
+	// Effective frontend env = declared env, with any per-run overrides (e.g. a
+	// chosen model size) taking precedence.
+	effEnv := make(map[string]string, len(lf.Env)+len(envOverride))
 	for k, v := range lf.Env {
+		effEnv[k] = v
+	}
+	for k, v := range envOverride {
+		effEnv[k] = v
+		log(fmt.Sprintf("frontend env override: %s=%s", k, v))
+	}
+	env := os.Environ()
+	remapped := false
+	for k, v := range effEnv {
+		// The app reaches its port-forwarded backends via env like
+		// "http://localhost:11434/v1"; rewrite those to the random local ports the
+		// forwards actually bound to. Only host:port references are rewritten.
+		for orig, local := range remap {
+			for _, host := range []string{"localhost", "127.0.0.1"} {
+				old := fmt.Sprintf("%s:%d", host, orig)
+				if strings.Contains(v, old) {
+					v = strings.ReplaceAll(v, old, fmt.Sprintf("%s:%d", host, local))
+					remapped = true
+				}
+			}
+		}
 		env = append(env, k+"="+v)
+	}
+	if remapped {
+		log("Rewrote frontend env to the random backend port-forward ports.")
 	}
 	ucmd := exec.CommandContext(ctx, uvicorn, entry, "--host", "127.0.0.1", "--port", fmt.Sprint(port))
 	ucmd.Dir = frontendDir

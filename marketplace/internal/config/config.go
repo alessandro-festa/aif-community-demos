@@ -21,6 +21,11 @@ type Config struct {
 	// are merged (via KUBECONFIG) with the host/default kubeconfig so their contexts
 	// become selectable without launching bpm with a custom KUBECONFIG.
 	Kubeconfigs []string `yaml:"kubeconfigs" json:"kubeconfigs,omitempty"`
+	// RancherURL and RancherInsecure remember the last Rancher server used to import
+	// downstream clusters. These are non-secret conveniences; the API token is never
+	// persisted (kept in memory only, re-entered each session).
+	RancherURL      string `yaml:"rancherURL" json:"rancherURL,omitempty"`
+	RancherInsecure bool   `yaml:"rancherInsecure" json:"rancherInsecure,omitempty"`
 }
 
 // Defaults returns the built-in configuration used when no file exists yet.

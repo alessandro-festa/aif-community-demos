@@ -51,9 +51,9 @@ spec:
           # Qwen2.5-VL 3B — multimodal (vision+text), the CPU counterpart of the
           # vLLM variant's Qwen/Qwen2.5-VL-3B-Instruct.
           pull:
-          - qwen2.5vl:3b
+          - "{{MODEL}}"
           run:
-          - qwen2.5vl:3b
+          - "{{MODEL}}"
         port: 11434
       persistentVolume:
         enabled: true

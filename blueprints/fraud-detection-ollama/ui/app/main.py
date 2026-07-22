@@ -10,14 +10,14 @@ Inspired by / with thanks to SantanderAI/gen-fraud-graph (Apache-2.0) and
 srinivas-gajulaa/genai-fraud-detection (analyst-explanation pattern).
 
 The SAME code drives both variants — only env differs:
-  * Ollama : OPENAI_BASE_URL=http://localhost:11434/v1  LLM_MODEL=qwen2.5:3b
+  * Ollama : OPENAI_BASE_URL=http://localhost:11434/v1  LLM_MODEL=qwen2.5:1.5b
   * vLLM   : OPENAI_BASE_URL=http://localhost:8000/v1   LLM_MODEL=Qwen/Qwen2.5-3B-Instruct
 
 Config (env):
   POSTGRES_URI     postgresql://fraud:fraud@localhost:5432/fraud
   MILVUS_URI       http://localhost:19530
   OPENAI_BASE_URL  http://localhost:11434/v1
-  LLM_MODEL        qwen2.5:3b
+  LLM_MODEL        qwen2.5:1.5b
   OPENAI_API_KEY   EMPTY
 """
 from __future__ import annotations
@@ -38,7 +38,7 @@ from pydantic import BaseModel
 POSTGRES_URI = os.environ.get("POSTGRES_URI", "postgresql://fraud:fraud@localhost:5432/fraud")
 MILVUS_URI = os.environ.get("MILVUS_URI", "http://localhost:19530").rstrip("/")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1").rstrip("/")
-LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:3b")
+LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:1.5b")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "EMPTY")
 HTTP_TIMEOUT = 120
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"

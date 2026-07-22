@@ -30,6 +30,15 @@ localFrontend:
 # enabled only once the service is Ready).
 componentUIs:
   - {name: airflow, label: "Airflow UI", service: apache-airflow-api-server, port: 8080, path: /}
+# Base LLM size (CPU). The DAG builds "astra-custom" from this; the embedding model
+# (nomic-embed-text) stays pinned so the Milvus index dimensionality still matches.
+# No frontend envKey — the UI picks the built model from ollama's tag list.
+modelSizes:
+  default: small
+  replace: "{{MODEL}}"
+  options:
+    - {id: small, label: "1.5B — faster (CPU)", model: "qwen2.5:1.5b"}
+    - {id: large, label: "3B — higher quality", model: "qwen2.5:3b"}
 guide:
   - title: Import the blueprint
     body: |

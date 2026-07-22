@@ -130,11 +130,11 @@ spec:
           draEnabled: false
         models:
           pull:
-          - qwen2.5:3b        # chat + tool-calling (open/close ticket) — <4B, CPU
+          - "{{MODEL}}"       # chat + tool-calling (open/close ticket) — user-selectable size
           - qwen2.5vl:3b      # accident-photo vision (captioning)
           - nomic-embed-text  # semantic embeddings
           run:
-          - qwen2.5:3b
+          - "{{MODEL}}"
         port: 11434
       persistentVolume:
         enabled: true
@@ -193,7 +193,7 @@ spec:
       - name: CHAT_BASE_URL
         value: http://ollama:11434/v1
       - name: BASE_MODEL
-        value: qwen2.5:3b
+        value: "{{MODEL}}"
       - name: CUSTOM_MODEL
         value: support-agent
       # Synthetic dataset size — the import wizard can override {{N_TICKETS}}

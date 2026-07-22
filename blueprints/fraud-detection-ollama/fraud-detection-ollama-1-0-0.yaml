@@ -9,7 +9,7 @@ metadata:
 # Airflow generates a synthetic fraud graph (SantanderAI/gen-fraud-graph, Apache-2.0),
 # loads it into PostgreSQL, engineers graph/behavioural features, trains an XGBoost
 # classifier, and pushes per-account feature vectors into Milvus for anomaly detection.
-# A local SUSE UI reads the results and uses a local LLM (Ollama, qwen2.5:3b) as an AML
+# A local SUSE UI reads the results and uses a local LLM (Ollama, qwen2.5:1.5b) as an AML
 # analyst to explain flagged cases. All components from the SUSE Application Collection.
 #
 # Inspired by and with thanks to:
@@ -27,7 +27,7 @@ spec:
     PostgreSQL, trains an XGBoost classifier on the labelled data, and indexes per-account
     behavioural feature vectors in Milvus for anomaly detection. A local SUSE-styled
     investigator UI shows dataset stats, model metrics and flagged accounts, and uses a
-    local LLM (Ollama, qwen2.5:3b) as an AML analyst to classify + explain flagged cases.
+    local LLM (Ollama, qwen2.5:1.5b) as an AML analyst to classify + explain flagged cases.
 
     Thanks to SantanderAI/gen-fraud-graph (https://github.com/SantanderAI/gen-fraud-graph)
     for inspiring this blueprint, and to srinivas-gajulaa/genai-fraud-detection for the
@@ -130,9 +130,9 @@ spec:
           draEnabled: false
         models:
           pull:
-          - qwen2.5:3b
+          - "{{MODEL}}"
           run:
-          - qwen2.5:3b
+          - "{{MODEL}}"
         port: 11434
       persistentVolume:
         enabled: true

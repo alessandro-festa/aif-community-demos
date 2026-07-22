@@ -124,6 +124,49 @@ func (w *ImportWizard) Input(id string) (WizardInput, bool) {
 	return WizardInput{}, false
 }
 
+// ModelSizes, when present on a (CPU) blueprint, lets the user pick an LLM size in
+// the guided demo. The chosen option's Model is substituted for the Replace token in
+// the CR at import time (so ollama pulls/serves it) and, when EnvKey is set, injected
+// into the local frontend's env at start time (so the app requests it).
+type ModelSizes struct {
+	Default string        `yaml:"default" json:"default"`
+	EnvKey  string        `yaml:"envKey" json:"envKey,omitempty"` // frontend env var to set (optional)
+	Replace string        `yaml:"replace" json:"-"`               // CR placeholder token (never shipped to the browser)
+	Options []ModelOption `yaml:"options" json:"options"`
+}
+
+// ModelOption is one selectable model size.
+type ModelOption struct {
+	ID    string `yaml:"id" json:"id"`
+	Label string `yaml:"label" json:"label"`
+	Model string `yaml:"model" json:"model"`
+}
+
+// Option returns the model option with the given id.
+func (m *ModelSizes) Option(id string) (ModelOption, bool) {
+	for _, o := range m.Options {
+		if o.ID == id {
+			return o, true
+		}
+	}
+	return ModelOption{}, false
+}
+
+// Resolve returns the model string for the given size id, falling back to Default
+// (then the first option). Returns "" if there are no options.
+func (m *ModelSizes) Resolve(id string) string {
+	if o, ok := m.Option(id); ok {
+		return o.Model
+	}
+	if o, ok := m.Option(m.Default); ok {
+		return o.Model
+	}
+	if len(m.Options) > 0 {
+		return m.Options[0].Model
+	}
+	return ""
+}
+
 // GuideStep is one page of the step-by-step demo.
 type GuideStep struct {
 	Title  string  `yaml:"title" json:"title"`
@@ -143,6 +186,7 @@ type Blueprint struct {
 	LocalFrontend *LocalFrontend `yaml:"localFrontend" json:"localFrontend,omitempty"`
 	ComponentUIs  []ComponentUI  `yaml:"componentUIs" json:"componentUIs,omitempty"`
 	ImportWizard  *ImportWizard  `yaml:"importWizard" json:"importWizard,omitempty"`
+	ModelSizes    *ModelSizes    `yaml:"modelSizes" json:"modelSizes,omitempty"`
 	Guide         []GuideStep    `yaml:"guide" json:"guide"`
 
 	// Dir is the absolute path to this blueprint's folder in the checkout

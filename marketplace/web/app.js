@@ -12,6 +12,11 @@ const state = {
   step: 0,         // guide step index
   namespace: "",
   done: {},        // step index -> true
+  bpContext: "",   // target kube context for the open blueprint's guided demo
+  bpModel: "",     // chosen model-size id for the open blueprint (if it has modelSizes)
+  selectMode: false,       // catalog multi-select mode
+  selected: new Set(),     // ids ticked for bulk import
+  rancherClusters: [],     // downstream clusters from the last Rancher connect
 };
 
 // --- helpers -------------------------------------------------------------- //
@@ -155,6 +160,7 @@ function render() {
   if (state.view === "running") return renderRunning();
   if (state.view === "detail") return renderDetail();
   if (state.view === "guide") return renderGuide();
+  if (state.view === "bulk") return renderBulk();
   return renderCatalog();
 }
 
@@ -249,13 +255,22 @@ function renderCatalog() {
       `<option value="${esc(t)}" ${t === state.catalogTopic ? "selected" : ""}>${esc(topicLabel(t))}</option>`))
     .join("");
 
+  const selN = state.selected.size;
   app.innerHTML = `<h2>Blueprints</h2>
     <p class="muted">Select a blueprint to import it and run a guided demo.</p>
     <div class="catalog-filters">
       <input id="catalog-search" type="search" autocomplete="off"
         placeholder="Search by name, tag, or topic…" value="${esc(state.catalogQuery || "")}" />
       <select id="catalog-topic">${topicOptions}</select>
+      <button id="select-toggle" class="${state.selectMode ? "primary" : ""}">${state.selectMode ? "Done" : "Select"}</button>
     </div>
+    ${state.selectMode ? `<div class="select-bar">
+      <span><strong id="sel-count">${selN}</strong> selected</span>
+      <span class="row" style="margin-left:auto;gap:8px">
+        <button id="sel-clear" ${selN ? "" : "disabled"}>Clear</button>
+        <button id="sel-import" class="primary" ${selN ? "" : "disabled"}>Import selected</button>
+      </span>
+    </div>` : ""}
     <div id="catalog-results"></div>`;
 
   const renderResults = () => {
@@ -275,30 +290,199 @@ function renderCatalog() {
     }
     // All matching cards together in one grid (no per-topic sections).
     results.innerHTML = `<div class="grid">${matches.map(cardHTML).join("")}</div>`;
-    matches.forEach((bp) =>
-      document.getElementById(`bp-${bp.id}`)?.addEventListener("click", () => openBlueprint(bp.id)));
+    matches.forEach((bp) => {
+      const el = document.getElementById(`bp-${bp.id}`);
+      if (!el) return;
+      if (!state.selectMode) {
+        el.addEventListener("click", () => openBlueprint(bp.id));
+        return;
+      }
+      if (needsSetup(bp)) return; // blocked — needs per-blueprint setup, not selectable
+      el.addEventListener("click", () => {
+        if (state.selected.has(bp.id)) state.selected.delete(bp.id);
+        else state.selected.add(bp.id);
+        el.classList.toggle("selected", state.selected.has(bp.id));
+        const cb = el.querySelector(".card-check");
+        if (cb) cb.checked = state.selected.has(bp.id);
+        updateSelBar();
+      });
+    });
   };
 
   const searchEl = document.getElementById("catalog-search");
   const topicEl = document.getElementById("catalog-topic");
   searchEl.addEventListener("input", () => { state.catalogQuery = searchEl.value; renderResults(); });
   topicEl.addEventListener("change", () => { state.catalogTopic = topicEl.value; renderResults(); });
+
+  document.getElementById("select-toggle").addEventListener("click", () => {
+    state.selectMode = !state.selectMode;
+    if (!state.selectMode) state.selected.clear();
+    renderCatalog();
+  });
+  if (state.selectMode) {
+    document.getElementById("sel-clear").addEventListener("click", () => { state.selected.clear(); renderCatalog(); });
+    document.getElementById("sel-import").addEventListener("click", () => { if (state.selected.size) setView("bulk"); });
+  }
   renderResults();
+}
+
+// updateSelBar refreshes the sticky action bar count + button state without a
+// full re-render (keeps search-box focus while ticking cards).
+function updateSelBar() {
+  const n = state.selected.size;
+  const c = document.getElementById("sel-count"); if (c) c.textContent = n;
+  const clr = document.getElementById("sel-clear"); if (clr) clr.disabled = !n;
+  const imp = document.getElementById("sel-import"); if (imp) imp.disabled = !n;
+}
+
+// needsSetup reports whether a blueprint requires wizard input (e.g. an HF token)
+// before it can be imported — such blueprints are excluded from bulk import.
+function needsSetup(bp) {
+  return (bp.importWizard?.inputs || []).some((i) => i.required);
 }
 
 function cardHTML(bp) {
   const tags = (bp.tags || []).map((t) => `<span class="badge neutral">${esc(t)}</span>`).join("");
-  return `<div class="card clickable" id="bp-${esc(bp.id)}">
+  const sel = state.selectMode;
+  const blocked = sel && needsSetup(bp);
+  const checked = state.selected.has(bp.id);
+  const cls = `card ${sel ? "selectable" : "clickable"}${checked ? " selected" : ""}${blocked ? " disabled" : ""}`;
+  const check = sel
+    ? `<input type="checkbox" class="card-check" ${checked ? "checked" : ""} ${blocked ? "disabled" : ""} aria-label="Select ${esc(bp.displayName)}">`
+    : "";
+  const setupBadge = blocked ? `<span class="badge warn">needs setup — import individually</span>` : "";
+  return `<div class="${cls}" id="bp-${esc(bp.id)}">
+    ${check}
     <h3>${esc(bp.displayName)}</h3>
     <p>${esc(bp.description)}</p>
-    <div class="tags"><span class="badge">${esc(bp.category || "blueprint")}</span>${tags}</div>
+    <div class="tags"><span class="badge">${esc(bp.category || "blueprint")}</span>${tags}${setupBadge}</div>
   </div>`;
 }
 
 async function openBlueprint(id) {
   state.bp = state.catalog.find((b) => b.id === id);
   state.step = 0; state.done = {}; state.namespace = "";
+  state.bpContext = defaultBulkContext(); // default to the settings/current cluster
+  state.bpModel = state.bp?.modelSizes?.default || ""; // default model size, if any
   setView("detail");
+}
+
+// modelSelectHTML renders a "Model" dropdown bound to state.bpModel, shown only when
+// the blueprint defines modelSizes. The choice flows into import (CR) + frontend env.
+function modelSelectHTML(id) {
+  const ms = state.bp?.modelSizes;
+  if (!ms || !(ms.options || []).length) return "";
+  const cur = state.bpModel || ms.default || ms.options[0].id;
+  const opts = ms.options.map((o) =>
+    `<option value="${esc(o.id)}" ${o.id === cur ? "selected" : ""}>${esc(o.label || o.id)}</option>`).join("");
+  return `<label class="cluster-select">Model
+    <select id="${esc(id)}">${opts}</select></label>`;
+}
+function wireModelSelect(id, onChange) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!state.bpModel && el.value) state.bpModel = el.value; // adopt the default
+  el.addEventListener("change", () => { state.bpModel = el.value; onChange && onChange(); });
+}
+
+// clusterSelectHTML renders a "Target cluster" dropdown bound to state.bpContext,
+// used in the guided demo so a blueprint installed on a downstream cluster is
+// checked/port-forwarded there. wireClusterSelect binds change → onChange.
+function clusterSelectHTML(id) {
+  const cur = state.bpContext || defaultBulkContext();
+  const opts = state.contexts.map((c) =>
+    `<option value="${esc(c.name)}" ${c.name === cur ? "selected" : ""}>${esc(c.name)}${c.ready ? "" : " — AI Factory not detected"}</option>`).join("");
+  return `<label class="cluster-select">Target cluster
+    <select id="${esc(id)}" ${state.contexts.length ? "" : "disabled"}>${opts || '<option value="">no clusters found</option>'}</select></label>`;
+}
+function wireClusterSelect(id, onChange) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!state.bpContext && el.value) state.bpContext = el.value; // adopt the default
+  el.addEventListener("change", () => { state.bpContext = el.value; onChange && onChange(); });
+}
+
+// --- bulk import ---------------------------------------------------------- //
+// The default cluster for a bulk import: the settings target, else the current
+// kube context. The user can override it in the dropdown (Rancher downstream
+// clusters — the batch must land on the right cluster or component access on the
+// blueprint never turns green).
+function defaultBulkContext() {
+  return state.settings?.targetContext || state.contexts.find((c) => c.current)?.name || "";
+}
+
+function bulkRowHTML(bp) {
+  return `<div class="card bulk-row" data-row="${esc(bp.id)}">
+    <div class="check">
+      <span class="status" data-st>•</span>
+      <span><strong>${esc(bp.displayName)}</strong></span>
+      <span class="muted" data-msg style="margin-left:auto">queued</span>
+    </div>
+    <pre class="log" data-log hidden></pre>
+  </div>`;
+}
+
+function renderBulk() {
+  const bps = [...state.selected].map((id) => state.catalog.find((b) => b.id === id)).filter(Boolean);
+  if (!bps.length) { setView("catalog"); return; }
+  const cur = defaultBulkContext();
+  const ctxOptions = state.contexts.map((c) =>
+    `<option value="${esc(c.name)}" ${c.name === cur ? "selected" : ""}>${esc(c.name)}${c.ready ? "" : " — AI Factory not detected"}</option>`).join("");
+
+  app.innerHTML = `
+    <button class="link back" id="back">← Catalog</button>
+    <h2>Import ${bps.length} blueprint${bps.length === 1 ? "" : "s"}</h2>
+    <div class="card section">
+      <div class="row" style="gap:12px;align-items:flex-end;flex-wrap:wrap">
+        <label style="flex:1;min-width:240px">Target cluster
+          <select id="bulk-ctx" ${state.contexts.length ? "" : "disabled"}>${ctxOptions || '<option value="">no clusters found</option>'}</select>
+        </label>
+        <button class="primary" id="bulk-start" ${bps.length && cur ? "" : "disabled"}>Start import</button>
+      </div>
+      <p class="muted" style="margin-top:8px">Each blueprint is applied (<code>kubectl apply</code>) into the selected cluster, one after another.</p>
+    </div>
+    <div id="bulk-rows">${bps.map(bulkRowHTML).join("")}</div>
+    <div id="bulk-summary" class="section"></div>`;
+
+  document.getElementById("back").addEventListener("click", () => setView("catalog"));
+  document.getElementById("bulk-start").addEventListener("click", () => runBulkImport(bps));
+}
+
+async function runBulkImport(bps) {
+  const ctxSel = document.getElementById("bulk-ctx");
+  const ctx = ctxSel.value;
+  if (!ctx) return;
+  const startBtn = document.getElementById("bulk-start");
+  const back = document.getElementById("back");
+  startBtn.disabled = true; startBtn.innerHTML = '<span class="spinner"></span>importing…';
+  ctxSel.disabled = true; back.style.pointerEvents = "none";
+
+  let ok = 0, fail = 0;
+  for (const bp of bps) {
+    const row = document.querySelector(`[data-row="${CSS.escape(bp.id)}"]`);
+    const st = row.querySelector("[data-st]");
+    const msg = row.querySelector("[data-msg]");
+    const log = row.querySelector("[data-log]");
+    st.className = "status"; st.textContent = "…"; msg.textContent = "importing…";
+    log.hidden = false; log.textContent = "";
+    await new Promise((resolve) => {
+      let settled = false;
+      const done = () => { if (!settled) { settled = true; resolve(); } };
+      streamPost(`/api/blueprints/${bp.id}/import`, { context: ctx }, {
+        onLog: (l) => { log.textContent += l + "\n"; log.scrollTop = log.scrollHeight; },
+        onDone: (m) => { st.className = "status ok"; st.textContent = "✓"; msg.textContent = m || "imported"; ok++; done(); },
+        onError: (m) => { st.className = "status bad"; st.textContent = "✗"; msg.textContent = m || "failed"; fail++; done(); },
+      }).then(() => {
+        if (!settled) { st.className = "status bad"; st.textContent = "✗"; msg.textContent = "no response"; fail++; done(); }
+      });
+    });
+  }
+
+  document.getElementById("bulk-summary").innerHTML =
+    `<div class="card"><strong>${ok} imported${fail ? `, ${fail} failed` : ""}.</strong>
+     <div class="muted">Target cluster: <code>${esc(ctx)}</code></div></div>`;
+  startBtn.hidden = true; back.style.pointerEvents = "";
+  state.selected.clear(); state.selectMode = false; // selection consumed
 }
 
 async function renderDetail() {
@@ -307,6 +491,9 @@ async function renderDetail() {
     <button class="link back" id="back">← Catalog</button>
     <h2>${esc(bp.displayName)}</h2>
     <p class="muted">${esc(bp.description)}</p>
+    <div class="card section"><div class="row" style="gap:16px;flex-wrap:wrap;align-items:flex-end">${clusterSelectHTML("detail-ctx")}${modelSelectHTML("detail-model")}</div>
+      <p class="muted" style="margin-top:6px">Prereqs, import and component access all run against this cluster.${bp.modelSizes ? " The model applies to both import and the local frontend." : ""}</p>
+    </div>
     <div class="card section">
       <h3>Prerequisites <span class="muted" id="prereq-ctx"></span></h3>
       <div id="prereqs"><span class="spinner"></span>Checking…</div>
@@ -316,8 +503,10 @@ async function renderDetail() {
     </div>`;
   document.getElementById("back").addEventListener("click", () => setView("catalog"));
   document.getElementById("start-guide").addEventListener("click", () => { state.step = 0; setView("guide"); });
+  wireClusterSelect("detail-ctx", () => renderDetail()); // re-check prereqs on the new cluster
+  wireModelSelect("detail-model"); // choice used at import + frontend start
   try {
-    const res = await getJSON(`/api/blueprints/${bp.id}/prereqs`);
+    const res = await getJSON(`/api/blueprints/${bp.id}/prereqs?context=${encodeURIComponent(state.bpContext || "")}`);
     document.getElementById("prereq-ctx").textContent = res.context ? `on ${res.context}` : "";
     document.getElementById("prereqs").innerHTML = res.results.map((r) =>
       `<div class="check"><span class="status ${r.ok ? "ok" : "bad"}">${r.ok ? "✓" : "✗"}</span>
@@ -337,6 +526,7 @@ function renderGuide() {
   app.innerHTML = `
     <button class="link back" id="back">← ${esc(bp.displayName)}</button>
     <div class="stepper">${stepper}</div>
+    <div class="guide-cluster"><div class="row" style="gap:16px;flex-wrap:wrap;align-items:flex-end">${clusterSelectHTML("guide-ctx")}${modelSelectHTML("guide-model")}</div></div>
     <div class="card">
       <h2>${esc(step.title)}</h2>
       <div class="step-body">${md(step.body)}</div>
@@ -359,6 +549,9 @@ function renderGuide() {
   renderAction(step);
   renderComponentUIs();
   refreshProcesses();
+  // Switching cluster re-checks component access (and future actions use it too).
+  wireClusterSelect("guide-ctx", () => renderComponentUIs());
+  wireModelSelect("guide-model"); // used by the import + start-frontend actions
 }
 
 // Component UIs (e.g. Airflow) — a port-forward button per declared component,
@@ -394,7 +587,7 @@ async function wireComponentUI(u) {
     if (!document.body.contains(row)) return; // view changed; stop polling
     try {
       const r = await postJSON(`/api/blueprints/${state.bp.id}/service-status`, {
-        namespace: state.namespace, service: u.service,
+        namespace: state.namespace, service: u.service, context: state.bpContext,
       });
       if (r.ready) {
         dot.className = "dot ok"; status.textContent = "ready"; btn.disabled = false;
@@ -413,7 +606,7 @@ async function wireComponentUI(u) {
     btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
     try {
       const r = await postJSON(`/api/blueprints/${state.bp.id}/component-ui/start`, {
-        namespace: state.namespace, name: u.name,
+        namespace: state.namespace, name: u.name, context: state.bpContext,
       });
       window.open(r.url, "_blank");
       btn.textContent = "Open"; btn.disabled = false;
@@ -473,7 +666,7 @@ function renderAction(step) {
       const missing = inputs.find((i) => i.required && !inputVals[i.id]);
       if (missing) { err.textContent = `${missing.label || missing.id} is required`; return; }
       e.target.disabled = true; e.target.innerHTML = `<span class="spinner"></span>Importing…`;
-      streamPost(`/api/blueprints/${bp.id}/import`, { selections, inputs: inputVals }, {
+      streamPost(`/api/blueprints/${bp.id}/import`, { selections, inputs: inputVals, context: state.bpContext, modelSize: state.bpModel }, {
         onLog: logLine,
         onDone: (m) => { logLine("✓ " + m); e.target.disabled = false; e.target.textContent = "Re-import"; markDone(); },
         onError: (m) => { err.textContent = m; e.target.disabled = false; e.target.textContent = "Retry import"; },
@@ -499,7 +692,7 @@ function renderAction(step) {
     document.getElementById("do").addEventListener("click", (e) => {
       if (!state.namespace) { document.getElementById("err").textContent = "Set the AIWorkload namespace in the previous step first."; return; }
       e.target.disabled = true; e.target.innerHTML = `<span class="spinner"></span>Starting…`;
-      streamPost(`/api/blueprints/${bp.id}/frontend/start`, { namespace: state.namespace }, {
+      streamPost(`/api/blueprints/${bp.id}/frontend/start`, { namespace: state.namespace, context: state.bpContext, modelSize: state.bpModel }, {
         onLog: logLine,
         onDone: (url) => {
           logLine("✓ ready: " + url);
@@ -567,6 +760,57 @@ function wireKubeconfigImport() {
   }));
 }
 
+// rancherClustersHTML renders the list of downstream clusters from the last connect,
+// each with an Import button (or an "imported" badge).
+function rancherClustersHTML() {
+  const cl = state.rancherClusters || [];
+  if (!cl.length) return "";
+  return `<div class="section" style="margin-top:14px"><label>Downstream clusters</label>${cl.map(rancherRow).join("")}</div>`;
+}
+function rancherRow(c) {
+  const right = c.imported
+    ? `<span class="badge ok">imported</span>`
+    : `<button class="link" data-rancher-import="${esc(c.id)}" data-rancher-name="${esc(c.name)}">import</button>`;
+  return `<div class="kc-item"><code>${esc(c.name)}</code>${right}</div>`;
+}
+
+function wireRancher() {
+  const err = () => document.getElementById("rancher-err");
+  document.getElementById("rancher-connect").addEventListener("click", async (e) => {
+    err().textContent = "";
+    const url = document.getElementById("rancher-url").value.trim();
+    const token = document.getElementById("rancher-token").value.trim();
+    const insecure = document.getElementById("rancher-insecure").checked;
+    if (!url || !token) { err().textContent = "Enter the Rancher URL and an API token."; return; }
+    e.target.disabled = true; e.target.innerHTML = `<span class="spinner"></span>Connecting…`;
+    try {
+      const d = await postJSON("/api/rancher/connect", { url, token, insecure });
+      state.rancherClusters = d.clusters || [];
+      state.settings = { ...(state.settings || {}), rancherUrl: d.url || url, rancherInsecure: insecure, rancherConnected: true };
+      renderSettings();
+    } catch (ex) {
+      err().textContent = String(ex.message || ex);
+      e.target.disabled = false; e.target.textContent = "Connect";
+    }
+  });
+  document.querySelectorAll("[data-rancher-import]").forEach((b) => b.addEventListener("click", async () => {
+    err().textContent = "";
+    b.disabled = true; b.textContent = "importing…";
+    try {
+      const d = await postJSON("/api/rancher/clusters/import", { id: b.dataset.rancherImport, name: b.dataset.rancherName });
+      state.contexts = d.contexts || [];
+      state.settings = { ...(state.settings || {}), kubeconfigs: d.kubeconfigs || [] };
+      // Mark this cluster imported in the in-memory list, then re-render.
+      state.rancherClusters = (state.rancherClusters || []).map((c) =>
+        c.id === b.dataset.rancherImport ? { ...c, imported: true } : c);
+      renderSettings(); renderClusterChip();
+    } catch (ex) {
+      err().textContent = String(ex.message || ex);
+      b.disabled = false; b.textContent = "import";
+    }
+  }));
+}
+
 function renderSettings() {
   const s = state.settings || {};
   const opts = state.contexts.map((c) =>
@@ -600,6 +844,22 @@ function renderSettings() {
       </div>
       <div class="row"><button class="primary" id="kc-import" style="max-width:160px">Import</button><span id="kc-msg" class="muted"></span></div>
       <div class="error" id="kc-err"></div>
+    </div>
+
+    <div class="card section" style="max-width:640px">
+      <h3 style="margin:0 0 6px">Rancher — import downstream clusters</h3>
+      <div class="muted" style="margin-bottom:8px">Connect to a Rancher server with an API token to list its downstream clusters and import their kubeconfigs. Imported clusters become selectable targets everywhere. The token is kept in memory only — never written to disk.</div>
+      <label>Rancher URL</label>
+      <input id="rancher-url" placeholder="https://rancher.example.com" value="${esc(s.rancherUrl || "")}" />
+      <label>API token</label>
+      <input id="rancher-token" type="password" placeholder="token-xxxxx:xxxxxxxx" autocomplete="off" />
+      <label class="check" style="text-transform:none;letter-spacing:normal;font-size:.85rem;color:var(--text)">
+        <input type="checkbox" id="rancher-insecure" ${s.rancherInsecure ? "checked" : ""} style="width:16px;height:16px;flex:0 0 auto" />
+        <span>Skip TLS verification (self-signed Rancher certificate)</span>
+      </label>
+      <div class="row"><button class="primary" id="rancher-connect" style="max-width:160px">Connect</button><span id="rancher-msg" class="muted">${s.rancherConnected ? "Connected this session." : ""}</span></div>
+      <div class="error" id="rancher-err"></div>
+      <div id="rancher-clusters">${rancherClustersHTML()}</div>
     </div>`;
 
   document.getElementById("refresh-ctx").addEventListener("click", async (e) => {
@@ -608,6 +868,7 @@ function renderSettings() {
     renderSettings();
   });
   wireKubeconfigImport();
+  wireRancher();
   document.getElementById("save").addEventListener("click", async () => {
     const btn = document.getElementById("save");
     btn.disabled = true; btn.innerHTML = `<span class="spinner"></span>Saving…`;

@@ -3,7 +3,7 @@ displayName: Fraud / AML Detection (Ollama, CPU)
 description: >-
   Financial-crime / money-laundering / anomaly detection. Airflow generates a synthetic
   fraud graph (SantanderAI/gen-fraud-graph), trains an XGBoost classifier, and indexes
-  behavioural vectors in Milvus for anomaly detection; a local LLM (Ollama, qwen2.5:3b)
+  behavioural vectors in Milvus for anomaly detection; a local LLM (Ollama, qwen2.5:1.5b)
   acts as an AML analyst explaining flagged accounts. All from the SUSE Application
   Collection. With thanks to SantanderAI/gen-fraud-graph for the inspiration.
 category: anomaly-detection
@@ -25,7 +25,7 @@ localFrontend:
     POSTGRES_URI: "postgresql://fraud:fraud@localhost:5432/fraud"
     MILVUS_URI: "http://localhost:19530"
     OPENAI_BASE_URL: "http://localhost:11434/v1"
-    LLM_MODEL: "qwen2.5:3b"
+    LLM_MODEL: "{{MODEL}}"
     OPENAI_API_KEY: "EMPTY"
   portForwards:
     - {name: fraud-db, service: fraud-db, local: 5432, remote: 5432}
@@ -35,6 +35,14 @@ localFrontend:
 # enabled only once the service is Ready).
 componentUIs:
   - {name: airflow, label: "Airflow UI", service: apache-airflow-api-server, port: 8080, path: /}
+# Let the user pick the AML-analyst LLM size at import + frontend start (CPU).
+modelSizes:
+  default: small
+  envKey: LLM_MODEL
+  replace: "{{MODEL}}"
+  options:
+    - {id: small, label: "1.5B — faster (CPU)", model: "qwen2.5:1.5b"}
+    - {id: large, label: "3B — higher quality", model: "qwen2.5:3b"}
 guide:
   - title: Import the blueprint
     body: |

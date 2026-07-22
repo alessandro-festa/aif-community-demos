@@ -74,10 +74,10 @@ spec:
         models:
           # A small CPU-friendly chat model + the embedding model used for RAG.
           pull:
-          - llama3.2:1b
+          - "{{MODEL}}"
           - nomic-embed-text
           run:
-          - llama3.2:1b
+          - "{{MODEL}}"
         port: 11434
       # Persist pulled models across pod restarts.
       persistentVolume:
@@ -193,7 +193,7 @@ spec:
       - name: EMBED_MODEL
         value: nomic-embed-text
       - name: BASE_MODEL
-        value: llama3.2:1b
+        value: "{{MODEL}}"
       - name: CUSTOM_MODEL
         value: astra-custom
       # Expose the Airflow 3 API Server (the web UI) via ingress.

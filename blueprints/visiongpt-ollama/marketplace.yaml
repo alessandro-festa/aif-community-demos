@@ -22,11 +22,19 @@ localFrontend:
   openPath: /
   env:
     OPENAI_BASE_URL: "http://localhost:11434/v1"
-    VLM_MODEL: "qwen2.5vl:3b"
+    VLM_MODEL: "{{MODEL}}"
     OPENAI_API_KEY: "EMPTY"
     SENSITIVITY: "normal"
   portForwards:
     - {name: ollama, service: ollama, local: 11434, remote: 11434}
+# Vision model size (CPU) — both are multimodal Qwen2.5-VL variants.
+modelSizes:
+  default: small
+  envKey: VLM_MODEL
+  replace: "{{MODEL}}"
+  options:
+    - {id: small, label: "3B — faster (CPU)", model: "qwen2.5vl:3b"}
+    - {id: large, label: "7B — higher quality", model: "qwen2.5vl:7b"}
 guide:
   - title: Import the blueprint
     body: |
