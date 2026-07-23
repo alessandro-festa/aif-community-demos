@@ -73,9 +73,16 @@ spec:
     chartVersion: 0.6.0
     values:
       fullnameOverride: gov-db
+      # OpenMetadata's Postgres migration runs `CREATE EXTENSION pgcrypto`, but the AppCo
+      # postgresql image ships NO contrib extensions (pg_available_extensions has only
+      # plpgsql), so it can't be installed. Use the Bitnami PostgreSQL image instead
+      # (contrib incl. pgcrypto; PG16 is OM-supported). The AppCo chart IS the Bitnami
+      # chart, so this image is drop-in compatible. (The only non-AppCo piece, because the
+      # AppCo image lacks an extension OpenMetadata requires.)
       image:
-        registry: dp.apps.rancher.io
-        repository: containers/postgresql
+        registry: docker.io
+        repository: bitnami/postgresql
+        tag: "16"
       auth:
         # OpenMetadata's own DB + user (the chart creates the user, db and the
         # `gov-db` secret; OpenMetadata reads the password from secret key `password`).
