@@ -11,6 +11,7 @@ prices from common.MODELS) and writes it at that day's midnight-UTC timestamp:
 
   finops_daily_spend_usd{team_alias, model, use_case}   (USD spent that day)
   finops_daily_tokens_total{model}                      (tokens that day)
+  finops_team_budget_usd{team_alias}                    (per-team monthly budget)
 
 The Grafana "Historical spend (backfilled)" panels read these. Live panels read the
 LiteLLM exporter metrics instead, so backfilled history and live spend never mix.
@@ -56,7 +57,16 @@ def backfill_history():
             day_factor = (0.35 if iso >= 6 else 1.0) * random.uniform(0.8, 1.2)
             day_tokens: dict[str, float] = {}
 
-            for team_alias, _key, _budget, use_case, tw in TEAMS:
+            for team_alias, _key, budget, use_case, tw in TEAMS:
+                # Per-team monthly budget as a metric so Grafana can compute budget
+                # utilization (spend / budget). Written at every backfilled day so it
+                # spans the window and max_over_time() finds it regardless of the
+                # instant-query staleness window.
+                samples.append({
+                    "metric": {"__name__": "finops_team_budget_usd", "team_alias": team_alias},
+                    "value": float(budget),
+                    "timestamp": ts_ms,
+                })
                 team_reqs = BASE_REQUESTS_PER_DAY * tw * day_factor
                 for model_name, in_price_1k, out_price_1k, mw in MODELS:
                     reqs = team_reqs * mw

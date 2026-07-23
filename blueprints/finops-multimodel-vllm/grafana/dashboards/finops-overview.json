@@ -14,7 +14,7 @@
   "panels": [
     {
       "type": "row",
-      "title": "Token spend (live \u2014 LiteLLM)",
+      "title": "Summary (live + 30-day history)",
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -42,17 +42,22 @@
       },
       "targets": [
         {
-          "expr": "sum(litellm_total_spend)",
+          "expr": "sum(sum_over_time(finops_daily_spend_usd[30d]) or litellm_total_spend)",
           "refId": "A"
         }
       ]
     },
     {
       "type": "stat",
-      "title": "Requests (24h)",
+      "title": "Total tokens (30d)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
       },
       "gridPos": {
         "h": 5,
@@ -62,7 +67,7 @@
       },
       "targets": [
         {
-          "expr": "sum(litellm_requests_total)",
+          "expr": "sum(sum_over_time(finops_daily_tokens_total[30d]) or litellm_total_tokens)",
           "refId": "A"
         }
       ]
@@ -88,17 +93,22 @@
       },
       "targets": [
         {
-          "expr": "sum(litellm_total_spend) / (sum(litellm_total_tokens) / 1000)",
+          "expr": "sum(sum_over_time(finops_daily_spend_usd[30d]) or litellm_total_spend) / (sum(sum_over_time(finops_daily_tokens_total[30d]) or litellm_total_tokens) / 1000)",
           "refId": "A"
         }
       ]
     },
     {
       "type": "stat",
-      "title": "Total tokens",
+      "title": "Requests (live)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
       },
       "gridPos": {
         "h": 5,
@@ -108,32 +118,49 @@
       },
       "targets": [
         {
-          "expr": "sum(litellm_total_tokens)",
+          "expr": "sum(litellm_requests_total)",
           "refId": "A"
         }
       ]
     },
     {
+      "type": "row",
+      "title": "Spend trend (30-day backfilled history)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      }
+    },
+    {
       "type": "timeseries",
-      "title": "Spend by model",
+      "title": "Spend by model (daily)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "currencyUSD"
+          "unit": "currencyUSD",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
         }
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 6
+        "y": 7
       },
       "targets": [
         {
-          "expr": "sum by (model) (litellm_total_spend)",
+          "expr": "sum by (model) (finops_daily_spend_usd)",
           "legendFormat": "{{model}}",
           "refId": "A"
         }
@@ -141,25 +168,32 @@
     },
     {
       "type": "timeseries",
-      "title": "Spend by team",
+      "title": "Spend by team (daily)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "currencyUSD"
+          "unit": "currencyUSD",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
         }
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 6
+        "y": 7
       },
       "targets": [
         {
-          "expr": "sum by (team_alias) (litellm_team_spend)",
+          "expr": "sum by (team_alias) (finops_daily_spend_usd)",
           "legendFormat": "{{team_alias}}",
           "refId": "A"
         }
@@ -172,12 +206,12 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 14
+        "y": 15
       }
     },
     {
       "type": "bargauge",
-      "title": "Budget utilization by team",
+      "title": "Budget utilization by team (spend / monthly budget)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -209,75 +243,11 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 15
+        "y": 16
       },
       "targets": [
         {
-          "expr": "litellm_budget_utilization{entity_type=\"team\"}",
-          "legendFormat": "{{entity_alias}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Tokens by model",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 15
-      },
-      "targets": [
-        {
-          "expr": "sum by (model) (litellm_total_tokens)",
-          "legendFormat": "{{model}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "row",
-      "title": "Historical spend (backfilled)",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 23
-      }
-    },
-    {
-      "type": "timeseries",
-      "title": "Daily spend by team",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "custom": {
-            "drawStyle": "bars",
-            "fillOpacity": 60,
-            "stacking": {
-              "mode": "normal"
-            }
-          }
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 24
-      },
-      "targets": [
-        {
-          "expr": "sum by (team_alias) (finops_daily_spend_usd)",
+          "expr": "100 * sum by (team_alias) (sum_over_time(finops_daily_spend_usd[30d]) or litellm_team_spend) / max by (team_alias) (max_over_time(finops_team_budget_usd[30d]))",
           "legendFormat": "{{team_alias}}",
           "refId": "A"
         }
@@ -285,14 +255,14 @@
     },
     {
       "type": "timeseries",
-      "title": "Daily spend by model",
+      "title": "Tokens by model (daily)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "currencyUSD",
+          "unit": "short",
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 60,
@@ -306,12 +276,76 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 24
+        "y": 16
       },
       "targets": [
         {
-          "expr": "sum by (model) (finops_daily_spend_usd)",
+          "expr": "sum by (model) (finops_daily_tokens_total)",
           "legendFormat": "{{model}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Live gateway (real-time LiteLLM)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Live spend by model",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {}
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "targets": [
+        {
+          "expr": "sum by (model) (litellm_total_spend)",
+          "legendFormat": "{{model}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Live spend by team",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {}
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "targets": [
+        {
+          "expr": "sum by (team_alias) (litellm_team_spend)",
+          "legendFormat": "{{team_alias}}",
           "refId": "A"
         }
       ]
@@ -323,7 +357,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 32
+        "y": 33
       }
     },
     {
@@ -343,7 +377,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 33
+        "y": 34
       },
       "targets": [
         {
@@ -369,7 +403,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 33
+        "y": 34
       },
       "targets": [
         {
@@ -388,14 +422,14 @@
       "fieldConfig": {
         "defaults": {
           "unit": "currencyUSD",
-          "decimals": 4
+          "custom": {}
         }
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 33
+        "y": 34
       },
       "targets": [
         {
