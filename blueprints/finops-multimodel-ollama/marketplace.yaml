@@ -36,6 +36,15 @@ componentUIs:
   - {name: grafana,  label: "Grafana (FinOps dashboards)", service: grafana, port: 80, path: /d/finops-overview}
   - {name: airflow,  label: "Airflow UI",                  service: apache-airflow-api-server, port: 8080, path: /}
   - {name: opencost, label: "OpenCost UI",                 service: opencost, port: 9090, path: /}
+# The DAGs bpm can trigger sequentially from the guide (trigger-dags action). It
+# opens a temporary port-forward to the Airflow API server and runs each DAG in
+# order, waiting for it to finish. They can still be run manually in the Airflow UI.
+# service/port/user/password default to the apache-airflow chart values.
+airflowPipeline:
+  dags:
+    - {id: finops_setup,     label: "Set up teams & budgets"}
+    - {id: backfill_history, label: "Backfill ~14d of history"}
+    - {id: generate_traffic, label: "Generate live traffic"}
 # Pre-import wizard — reused from the litellm-guardrails blueprint. Each selected
 # option is deep-merged into the litellm component's proxy_config (targetComponent)
 # before kubectl apply; guardrail entries append, so options compose.
@@ -123,8 +132,10 @@ guide:
     action: {type: namespace-input}
   - title: Set up teams, then simulate consumption (Airflow)
     body: |
-      Use the **Airflow UI** button below (enabled once Airflow is Ready) to open Airflow
-      (log in with **admin / admin**). Trigger these DAGs **in order**:
+      Click **Run pipeline (Airflow)** below to trigger these DAGs **in order**
+      automatically (each waits for the previous to finish). Prefer to drive it
+      yourself? Use the **Airflow UI** button (log in with **admin / admin**) and run
+      the same DAGs manually.
 
       1. `finops_setup` — creates a virtual key + monthly budget per team
          (engineering, data-science, marketing, support) in LiteLLM.
@@ -134,6 +145,7 @@ guide:
          (real token consumption). Re-run it (or schedule it) to grow the live trend.
 
       Raise `TRAFFIC_REQUESTS` / `BACKFILL_DAYS` on the blueprint for more volume/history.
+    action: {type: trigger-dags}
   - title: Explore the FinOps dashboards (Grafana)
     body: |
       Use the **Grafana (FinOps dashboards)** button below (login **admin / admin**) to

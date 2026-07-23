@@ -325,9 +325,13 @@ spec:
         enabled: false
       # kube-state-metrics stays ON (Deployment, no hostPort) — OpenCost needs it.
       server:
-        # Argumentless flag → enables the /api/v1/write remote-write receiver.
-        extraArgs:
-          web.enable-remote-write-receiver: null
+        # Bare boolean flags. The chart renders each list item as a `--<flag>` arg;
+        # a null-valued `extraArgs` entry is DROPPED instead (so the remote-write
+        # receiver silently stayed off → 404 on /api/v1/write). `web.enable-lifecycle`
+        # is the chart default for this list — repeat it or overriding the list loses it.
+        extraFlags:
+          - web.enable-lifecycle
+          - web.enable-remote-write-receiver   # enables the /api/v1/write receiver
         # Accept samples up to 30 days old (the backfill DAG writes historical ts).
         tsdb:
           out_of_order_time_window: 30d

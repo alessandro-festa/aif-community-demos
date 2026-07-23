@@ -98,7 +98,7 @@ def generate_traffic():
     def fire() -> dict:
         # Per-team virtual keys created by finops_setup. If missing, fall back to the
         # master key (spend still tagged, but not attributed to a team) and warn.
-        team_keys = json.loads(Variable.get(TEAM_KEYS_VAR, default_var="{}"))
+        team_keys = json.loads(Variable.get(TEAM_KEYS_VAR, default="{}"))
         used_fallback = not team_keys
 
         sent, blocked, errors = 0, 0, 0
