@@ -45,6 +45,13 @@ localFrontend:
 # enabled only once the service is Ready).
 componentUIs:
   - {name: airflow, label: "Airflow UI", service: apache-airflow-api-server, port: 8080, path: /}
+# The DAGs bpm triggers sequentially from the guide (trigger-dags action) — same
+# order as the manual steps below. Each waits for the previous to finish; they can
+# still be run manually in the Airflow UI. Defaults: apache-airflow-api-server:8080,
+# admin/admin, 60-min per-DAG timeout (covers heavy training/fine-tuning DAGs).
+airflowPipeline:
+  dags:
+    - {id: run_pipeline, label: "Run full compliance pipeline (5 stages)"}
 guide:
   - title: Import the blueprint
     body: |
@@ -72,6 +79,7 @@ guide:
       5. `check_compliance_alerts` — SLA-breach mart (deadlines lapsed / imminent).
 
       (Or just ask the agent in the UI to "run the whole pipeline" — it triggers them for you.)
+    action: {type: trigger-dags}
   - title: Launch the compliance dashboard
     body: |
       Starts `kubectl port-forward` to Postgres (5432), Milvus (19530), the vLLM router

@@ -58,6 +58,14 @@ localFrontend:
     - {name: ollama,     service: ollama,              local: 11434, remote: 11434}
     - {name: milvus,     service: milvus,              local: 19530, remote: 19530}
     - {name: support-db, service: support-db,          local: 5433,  remote: 5432}
+# The DAGs bpm triggers sequentially from the guide (trigger-dags action) — same
+# order as the manual steps below. Each waits for the previous to finish; they can
+# still be run manually in the Airflow UI. Defaults: apache-airflow-api-server:8080,
+# admin/admin, 60-min per-DAG timeout (covers heavy training/fine-tuning DAGs).
+airflowPipeline:
+  dags:
+    - {id: generate_dataset, label: "Generate dataset"}
+    - {id: index_cases,      label: "Index cases"}
 guide:
   - title: Choose dataset size & import
     body: |
@@ -84,6 +92,7 @@ guide:
 
       (The vLLM variant applies the support-agent persona as a system prompt, so there
       is no `customize_model` DAG here.)
+    action: {type: trigger-dags}
   - title: Launch the demo UI
     body: |
       Starts `kubectl port-forward` to the vLLM router, Ollama, Milvus, and Postgres,

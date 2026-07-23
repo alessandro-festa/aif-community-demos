@@ -67,6 +67,15 @@ modelSizes:
   options:
     - {id: small, label: "1.5B — faster (CPU)", model: "qwen2.5:1.5b"}
     - {id: large, label: "3B — higher quality", model: "qwen2.5:3b"}
+# The DAGs bpm triggers sequentially from the guide (trigger-dags action) — same
+# order as the manual steps below. Each waits for the previous to finish; they can
+# still be run manually in the Airflow UI. Defaults: apache-airflow-api-server:8080,
+# admin/admin, 60-min per-DAG timeout (covers heavy training/fine-tuning DAGs).
+airflowPipeline:
+  dags:
+    - {id: generate_dataset, label: "Generate dataset"}
+    - {id: index_cases,      label: "Index cases"}
+    - {id: customize_model,  label: "Build support-agent model"}
 guide:
   - title: Choose dataset size & import
     body: |
@@ -92,6 +101,7 @@ guide:
       3. **customize_model** — creates the `support-agent` persona model in Ollama.
 
       Wait for each to finish (green) before the next.
+    action: {type: trigger-dags}
   - title: Launch the demo UI
     body: |
       Starts `kubectl port-forward` to Ollama, Milvus, and Postgres, then runs the

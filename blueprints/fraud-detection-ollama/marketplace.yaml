@@ -43,6 +43,15 @@ modelSizes:
   options:
     - {id: small, label: "1.5B — faster (CPU)", model: "qwen2.5:1.5b"}
     - {id: large, label: "3B — higher quality", model: "qwen2.5:3b"}
+# The DAGs bpm triggers sequentially from the guide (trigger-dags action) — same
+# order as the manual steps below. Each waits for the previous to finish; they can
+# still be run manually in the Airflow UI. Defaults: apache-airflow-api-server:8080,
+# admin/admin, 60-min per-DAG timeout (covers heavy training/fine-tuning DAGs).
+airflowPipeline:
+  dags:
+    - {id: generate_fraud_dataset, label: "Generate fraud dataset"}
+    - {id: engineer_and_train,     label: "Engineer features & train"}
+    - {id: flag_and_anomaly,       label: "Flag & anomaly detection"}
 guide:
   - title: Import the blueprint
     body: |
@@ -68,6 +77,7 @@ guide:
       3. `flag_and_anomaly` — Milvus anomaly index → flagged accounts.
 
       Raise `SCALE_FACTOR` on the blueprint for a bigger dataset.
+    action: {type: trigger-dags}
   - title: Launch the investigator UI
     body: |
       Starts `kubectl port-forward` to Postgres (5432), Milvus (19530) and Ollama (11434) and

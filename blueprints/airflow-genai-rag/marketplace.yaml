@@ -39,6 +39,14 @@ modelSizes:
   options:
     - {id: small, label: "1.5B — faster (CPU)", model: "qwen2.5:1.5b"}
     - {id: large, label: "3B — higher quality", model: "qwen2.5:3b"}
+# The DAGs bpm triggers sequentially from the guide (trigger-dags action) — same
+# order as the manual steps below. Each waits for the previous to finish; they can
+# still be run manually in the Airflow UI. Defaults: apache-airflow-api-server:8080,
+# admin/admin, 60-min per-DAG timeout (covers heavy training/fine-tuning DAGs).
+airflowPipeline:
+  dags:
+    - {id: ingest_knowledge_base, label: "Ingest knowledge base"}
+    - {id: customize_model,       label: "Build customized model"}
 guide:
   - title: Import the blueprint
     body: |
@@ -63,6 +71,7 @@ guide:
 
       1. `ingest_knowledge_base` — embeds the knowledge base into Milvus.
       2. `customize_model` — builds the customized `astra-custom` model on Ollama.
+    action: {type: trigger-dags}
   - title: Launch the demo UI
     body: |
       Starts `kubectl port-forward` to Ollama (11434) and Milvus (19530) and runs the
