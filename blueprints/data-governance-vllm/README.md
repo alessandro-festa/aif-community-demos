@@ -31,7 +31,9 @@ reference tables, not a matching engine).
 - **OpenMetadata** (upstream, Apache-2.0) — catalog/glossary/lineage/DQ/policies/alerts, UI on `:8585`.
 - **OpenSearch** (AppCo, Apache-2.0) — OpenMetadata's search engine (single-node, `sysctlInit`
   sets `vm.max_map_count`, so no node-level sysctl prerequisite).
-- **PostgreSQL** (AppCo) — OpenMetadata's backend **and** the sample sources (`enterprise_dwh`, `gov_registry`).
+- **MariaDB** (AppCo) — OpenMetadata's backend DB (OM's Postgres path needs the `pgcrypto`
+  extension, which the AppCo Postgres image doesn't ship; MariaDB speaks the MySQL protocol OM uses).
+- **PostgreSQL** (AppCo) — the sample data sources only (`enterprise_dwh`, `gov_registry`).
 - **Apache Airflow** (AppCo, stock image) — the governance DAGs (`requests` + `psycopg2` only).
 - **vLLM** (AppCo, production-stack) — the copilot LLM (`Qwen/Qwen2.5-1.5B-Instruct`) on one GPU.
 

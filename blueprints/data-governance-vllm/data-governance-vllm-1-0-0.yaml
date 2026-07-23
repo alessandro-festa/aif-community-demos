@@ -64,33 +64,45 @@ spec:
     marketplace guide, open the OpenMetadata UI, then launch the copilot.
   components:
   # ----------------------------------------------------------------------- #
-  # PostgreSQL — OpenMetadata's backend DB (openmetadata_db) AND the sample data
-  # sources the DAGs seed: enterprise_dwh + gov_registry (the "public administration"
-  # external database). The extra DBs are created by the seed_governance DAG using the
-  # postgres superuser. Service: gov-db:5432.
+  # PostgreSQL (Application Collection) — holds ONLY the sample data sources the DAGs
+  # seed and OpenMetadata catalogs: enterprise_dwh + gov_registry (the "public
+  # administration" external DB). Plain tables (no pgcrypto), so the AppCo image is fine.
+  # OpenMetadata's OWN backend is MariaDB (next component). The seed_governance DAG
+  # creates the two sample DBs with the postgres superuser. Service: gov-db:5432.
   # ----------------------------------------------------------------------- #
   - chartName: postgresql
     chartRepo: application-collection
     chartVersion: 0.6.0
     values:
       fullnameOverride: gov-db
-      # OpenMetadata's Postgres migration runs `CREATE EXTENSION pgcrypto`, but the AppCo
-      # postgresql image ships NO contrib extensions (pg_available_extensions has only
-      # plpgsql), so it can't be installed. Use the Bitnami PostgreSQL image instead
-      # (contrib incl. pgcrypto; PG16 is OM-supported). The AppCo chart IS the Bitnami
-      # chart, so this image is drop-in compatible. (The only non-AppCo piece, because the
-      # AppCo image lacks an extension OpenMetadata requires.)
       image:
-        registry: docker.io
-        repository: bitnami/postgresql
-        tag: "16"
+        registry: dp.apps.rancher.io
+        repository: containers/postgresql
       auth:
-        # OpenMetadata's own DB + user (the chart creates the user, db and the
-        # `gov-db` secret; OpenMetadata reads the password from secret key `password`).
+        database: governance
+        username: governance
+        password: Governance-Demo-1
+        postgresPassword: GovAdmin-Demo-1
+      primary:
+        persistence:
+          enabled: true
+          size: 8Gi
+  # ----------------------------------------------------------------------- #
+  # MariaDB (Application Collection) — OpenMetadata's BACKEND database. OM's Postgres
+  # path needs the pgcrypto extension, which the AppCo Postgres image doesn't ship and
+  # can't install; the AppCo MariaDB speaks the MySQL protocol OM uses (dbScheme: mysql)
+  # and needs no such extension. Service: gov-mariadb:3306.
+  # ----------------------------------------------------------------------- #
+  - chartName: mariadb
+    chartRepo: application-collection
+    chartVersion: 1.0.0
+    values:
+      fullnameOverride: gov-mariadb
+      auth:
         database: openmetadata_db
         username: openmetadata_user
         password: Governance-Demo-1
-        postgresPassword: GovAdmin-Demo-1
+        rootPassword: GovAdmin-Demo-1
       primary:
         persistence:
           enabled: true
@@ -139,19 +151,21 @@ spec:
     values:
       openmetadata:
         config:
-          # External PostgreSQL backend.
+          # External MariaDB backend (MySQL protocol). secretRef/secretKey follow the AppCo
+          # chart convention (secret named after fullnameOverride, user password key
+          # `password`) — verify on-cluster if OM can't authenticate.
           database:
-            host: gov-db
-            port: 5432
-            driverClass: org.postgresql.Driver
-            dbScheme: postgresql
+            host: gov-mariadb
+            port: 3306
+            driverClass: com.mysql.cj.jdbc.Driver
+            dbScheme: mysql
             databaseName: openmetadata_db
             auth:
               username: openmetadata_user
               password:
-                secretRef: gov-db
+                secretRef: gov-mariadb
                 secretKey: password
-            dbParams: ""
+            dbParams: "allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=UTC"
           # External OpenSearch.
           elasticsearch:
             enabled: true
