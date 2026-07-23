@@ -34,12 +34,13 @@ HTTP_TIMEOUT = int(os.environ.get("CHAT_TIMEOUT", "180"))
 # and can time out). The multi-model cost story lives in the backfilled dashboards,
 # and the generate_traffic DAG still exercises all three models.
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "llama-3.2-1b")
-# Keep answers short + direct: faster on CPU, and no chain-of-thought / thinking output.
-SYSTEM_PROMPT = os.environ.get(
-    "CHAT_SYSTEM_PROMPT",
-    "You are a concise assistant. Answer directly in at most a few short sentences. "
-    "Do not explain your reasoning or show any thinking steps.",
-)
+# Optional system prompt. EMPTY by default on purpose: an instruction-style system
+# message ("do not explain your reasoning…") trips the detect_prompt_injection
+# guardrail ("Rejected message. This is a prompt injection attack."), which would
+# block every chat. The models used here don't emit chain-of-thought anyway, so speed
+# comes from the small warm model + low max_tokens. Set CHAT_SYSTEM_PROMPT to opt in
+# (only sensible when the prompt-injection guardrail is off).
+SYSTEM_PROMPT = os.environ.get("CHAT_SYSTEM_PROMPT", "").strip()
 MAX_TOKENS = int(os.environ.get("CHAT_MAX_TOKENS", "256"))
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -123,10 +124,10 @@ def chat(req: ChatReq):
             },
             json={
                 "model": req.model,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": req.message},
-                ],
+                "messages": (
+                    ([{"role": "system", "content": SYSTEM_PROMPT}] if SYSTEM_PROMPT else [])
+                    + [{"role": "user", "content": req.message}]
+                ),
                 "max_tokens": MAX_TOKENS,
                 "temperature": 0.7,
             },
