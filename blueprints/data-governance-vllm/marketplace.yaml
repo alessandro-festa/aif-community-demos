@@ -12,10 +12,11 @@ category: governance
 tags: [governance, data-catalog, openmetadata, glossary, lineage, data-quality, airflow, vllm, gpu, regtech]
 blueprintFile: data-governance-vllm-1-0-0.yaml
 prerequisites:
-  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)",     kind: crd, name: blueprints.ai-factory.suse.com}
-  - {id: omrepo, label: "ClusterRepo: openmetadata (upstream)", kind: crd, name: clusters.catalog.cattle.io}
-  - {id: sc,    label: "Default StorageClass",                kind: default-storageclass}
-  - {id: certm, label: "cert-manager",                        kind: namespace, name: cert-manager}
+  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
+  - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
+  - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
+  # NOTE: also register the upstream openmetadata + opensearch ClusterRepos before importing
+  # (see the first guide step / clusterrepos/) — there is no auto-check kind for a ClusterRepo.
 # The governance copilot UI the marketplace runs locally. Reads OpenMetadata's REST API
 # and talks to the vLLM router (OpenAI-compatible) — both over port-forwards; localhost
 # ports are auto-remapped to the random local ports the marketplace assigns.
