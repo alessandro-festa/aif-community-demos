@@ -102,6 +102,18 @@ TEAMS = {
 }
 
 
+# OpenMetadata requires dataLength for these column types; add a sensible default.
+_NEEDS_LENGTH = {"VARCHAR", "CHAR", "BINARY", "VARBINARY"}
+
+
+def _column(name: str, dtype: str, tags: list[str]) -> dict:
+    col = {"name": name, "dataType": dtype,
+           "tags": [{"tagFQN": t} for t in tags]}
+    if dtype in _NEEDS_LENGTH:
+        col["dataLength"] = 256
+    return col
+
+
 @dag(dag_id="seed_governance", schedule=None,
      start_date=pendulum.datetime(2024, 1, 1, tz="UTC"), catchup=False,
      tags=["governance", "seed"])
@@ -194,8 +206,7 @@ def seed_governance():
             for table, cols in spec["tables"].items():
                 om_put("/tables", {
                     "name": table, "databaseSchema": schema_fqn,
-                    "columns": [{"name": c, "dataType": dt,
-                                 "tags": [{"tagFQN": tg} for tg in tags]} for c, dt, tags in cols],
+                    "columns": [_column(c, dt, tags) for c, dt, tags in cols],
                 })
                 n_tables += 1
         return {"tables": n_tables}

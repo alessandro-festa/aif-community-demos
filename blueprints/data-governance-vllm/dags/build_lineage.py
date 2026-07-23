@@ -42,9 +42,13 @@ def _add_table_tag(fqn: str, tag_fqn: str) -> None:
     if tag_fqn not in [x["tagFQN"] for x in tags]:
         tags.append({"tagFQN": tag_fqn})
     schema_fqn = fqn.rsplit(".", 1)[0]
-    cols = [{"name": c["name"], "dataType": c.get("dataType", "UNKNOWN"),
-             "tags": [{"tagFQN": x["tagFQN"]} for x in (c.get("tags") or [])]}
-            for c in (t.get("columns") or [])]
+    cols = []
+    for c in (t.get("columns") or []):
+        col = {"name": c["name"], "dataType": c.get("dataType", "UNKNOWN"),
+               "tags": [{"tagFQN": x["tagFQN"]} for x in (c.get("tags") or [])]}
+        if c.get("dataLength") is not None:   # required for varchar/char/binary
+            col["dataLength"] = c["dataLength"]
+        cols.append(col)
     om_put("/tables", {"name": fqn.rsplit(".", 1)[1], "databaseSchema": schema_fqn,
                        "columns": cols, "tags": tags})
 
