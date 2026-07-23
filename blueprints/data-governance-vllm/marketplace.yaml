@@ -16,10 +16,12 @@ prerequisites:
   - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
   - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
 # Cluster prerequisite manifests bpm applies with kubectl at import (BEFORE the CR):
-# registers the upstream openmetadata Helm repo so the CR's OpenMetadata chart resolves.
+# registers the upstream openmetadata + bitnami Helm repos so the CR's OpenMetadata and
+# PostgreSQL charts resolve.
 # Applied automatically by the Import step — no separate terminal needed.
 clusterResources:
   - clusterrepos/openmetadata-clusterrepo.yaml
+  - clusterrepos/bitnami-clusterrepo.yaml
 # The governance copilot UI the marketplace runs locally. Reads OpenMetadata's REST API
 # and talks to the vLLM router (OpenAI-compatible) — both over port-forwards; localhost
 # ports are auto-remapped to the random local ports the marketplace assigns.
@@ -61,8 +63,10 @@ guide:
       Applies the Data Governance Copilot (vLLM) Blueprint CR to the selected cluster —
       it adds it to the SUSE AI Factory catalog, it does not deploy anything yet.
 
-      This blueprint uses one **upstream Apache-2.0** chart (OpenMetadata) that isn't in the
-      Application Collection. Import **automatically registers its ClusterRepo first**
+      This blueprint uses two **upstream Apache-2.0** charts (OpenMetadata, and the Bitnami
+      PostgreSQL chart — OpenMetadata needs pgcrypto, which the AppCo Postgres image lacks)
+      that aren't in the Application Collection. Import **automatically registers their
+      ClusterRepos first**
       (`kubectl apply` of `clusterrepos/`), so no separate terminal is needed. Everything else (PostgreSQL, OpenSearch, Airflow, vLLM) is Application Collection.
     action: {type: import}
   - title: Create the AIWorkload (SUSE AI Factory UI)

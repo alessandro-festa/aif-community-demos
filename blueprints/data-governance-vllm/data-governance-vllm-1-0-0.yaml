@@ -64,45 +64,31 @@ spec:
     marketplace guide, open the OpenMetadata UI, then launch the copilot.
   components:
   # ----------------------------------------------------------------------- #
-  # PostgreSQL (Application Collection) — holds ONLY the sample data sources the DAGs
-  # seed and OpenMetadata catalogs: enterprise_dwh + gov_registry (the "public
-  # administration" external DB). Plain tables (no pgcrypto), so the AppCo image is fine.
-  # OpenMetadata's OWN backend is MariaDB (next component). The seed_governance DAG
-  # creates the two sample DBs with the postgres superuser. Service: gov-db:5432.
+  # PostgreSQL (upstream Bitnami chart, Apache-2.0) — OpenMetadata's backend DB
+  # (openmetadata_db) AND the sample data sources the DAGs seed (enterprise_dwh,
+  # gov_registry). OpenMetadata requires the pgcrypto extension, which the AppCo Postgres
+  # image doesn't ship (and its image is locked); the Bitnami image includes contrib.
+  # Pinned to a pullable bitnamilegacy PG16 tag (an OM-supported version). The
+  # seed_governance DAG creates the two sample DBs with the postgres superuser.
+  # Service: gov-db:5432.
   # ----------------------------------------------------------------------- #
   - chartName: postgresql
-    chartRepo: application-collection
-    chartVersion: 0.6.0
+    chartRepo: bitnami
+    chartVersion: 18.8.0
     values:
-      fullnameOverride: gov-db
+      global:
+        security:
+          allowInsecureImages: true   # image repo (bitnamilegacy) differs from the chart default
       image:
-        registry: dp.apps.rancher.io
-        repository: containers/postgresql
-      auth:
-        database: governance
-        username: governance
-        password: Governance-Demo-1
-        postgresPassword: GovAdmin-Demo-1
-      primary:
-        persistence:
-          enabled: true
-          size: 8Gi
-  # ----------------------------------------------------------------------- #
-  # MariaDB (Application Collection) — OpenMetadata's BACKEND database. OM's Postgres
-  # path needs the pgcrypto extension, which the AppCo Postgres image doesn't ship and
-  # can't install; the AppCo MariaDB speaks the MySQL protocol OM uses (dbScheme: mysql)
-  # and needs no such extension. Service: gov-mariadb:3306.
-  # ----------------------------------------------------------------------- #
-  - chartName: mariadb
-    chartRepo: application-collection
-    chartVersion: 1.0.0
-    values:
-      fullnameOverride: gov-mariadb
+        registry: docker.io
+        repository: bitnamilegacy/postgresql
+        tag: 16.4.0-debian-12-r9
+      fullnameOverride: gov-db
       auth:
         database: openmetadata_db
         username: openmetadata_user
         password: Governance-Demo-1
-        rootPassword: GovAdmin-Demo-1
+        postgresPassword: GovAdmin-Demo-1
       primary:
         persistence:
           enabled: true
@@ -151,21 +137,20 @@ spec:
     values:
       openmetadata:
         config:
-          # External MariaDB backend (MySQL protocol). secretRef/secretKey follow the AppCo
-          # chart convention (secret named after fullnameOverride, user password key
-          # `password`) — verify on-cluster if OM can't authenticate.
+          # External PostgreSQL backend (Bitnami image includes pgcrypto). The chart's
+          # `gov-db` secret holds the user password under key `password`.
           database:
-            host: gov-mariadb
-            port: 3306
-            driverClass: com.mysql.cj.jdbc.Driver
-            dbScheme: mysql
+            host: gov-db
+            port: 5432
+            driverClass: org.postgresql.Driver
+            dbScheme: postgresql
             databaseName: openmetadata_db
             auth:
               username: openmetadata_user
               password:
-                secretRef: gov-mariadb
+                secretRef: gov-db
                 secretKey: password
-            dbParams: "allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=UTC"
+            dbParams: ""
           # External OpenSearch.
           elasticsearch:
             enabled: true
