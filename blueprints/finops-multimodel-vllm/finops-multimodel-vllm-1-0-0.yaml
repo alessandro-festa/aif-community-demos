@@ -314,7 +314,7 @@ spec:
                 - {name: LITELLM_DB_USER, value: litellm}
                 - {name: LITELLM_DB_PASSWORD, value: ChangeMe-litellm-db-password}
                 - {name: METRICS_PORT, value: "9090"}
-                - {name: METRICS_UPDATE_INTERVAL, value: "15"}
+                - {name: METRICS_UPDATE_INTERVAL, value: "5"}   # recompute spend often so chat shows up fast
                 - {name: METRICS_SPEND_WINDOW, value: "30d"}
                 readinessProbe:
                   httpGet: {path: /metrics, port: 9090}
@@ -380,7 +380,7 @@ spec:
           static_configs:
             - targets: ['opencost:9003']
         - job_name: litellm-exporter
-          scrape_interval: 30s
+          scrape_interval: 10s
           metrics_path: /metrics
           static_configs:
             - targets: ['litellm-exporter:9090']
@@ -441,7 +441,7 @@ spec:
                     "from": "now-30d",
                     "to": "now"
                   },
-                  "refresh": "30s",
+                  "refresh": "10s",
                   "templating": {
                     "list": []
                   },
