@@ -1,0 +1,266 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: data-governance-ollama
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: data-governance-ollama-1-0-0
+# Data Governance Copilot (Ollama, CPU).
+#
+# An enterprise DATA GOVERNANCE demo built on OpenMetadata (the open, Apache-2.0
+# governance platform) with a local LLM copilot. OpenMetadata provides the catalog,
+# business glossary, data lineage + impact analysis, data-quality test suites,
+# roles/policies (access matrices), classifications (regulations) and alerting. Apache
+# Airflow (the STOCK Application Collection image — no custom build) SEEDS and drives
+# OpenMetadata through its REST API and computes data-quality results over PostgreSQL
+# sample data. A small local FastAPI UI is a governance COPILOT: it reads OpenMetadata
+# and uses Ollama to answer discovery questions, draft glossary terms, explain
+# lineage/impact and summarise data quality.
+#
+# Design: OpenMetadata + OpenSearch are pulled from their upstream Apache-2.0 Helm
+# repos (not in the Application Collection) via ClusterRepos you create as a
+# prerequisite; everything else (PostgreSQL, Airflow, Ollama) is Application
+# Collection. OpenMetadata runs WITHOUT its bundled ingestion Airflow
+# (pipelineServiceClientConfig.enabled=false) — the stock AppCo Airflow drives it via
+# REST, so there is no custom OpenMetadata image and no second Airflow.
+#
+# Out of scope (too complex for a demo): importing architecture DIAGRAMS, designing
+# "to-be" architecture, deep unstructured-data management, and full MDM
+# matching/survivorship (master/reference data is represented as catalog + glossary +
+# reference tables, not a matching engine).
+#
+# ⚠ Demo only, unsupported. Passwords/keys below are placeholders.
+spec:
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
+  displayName: Data Governance Copilot (Ollama, CPU)
+  version: 1.0.0
+  description: |
+    Enterprise data governance on OpenMetadata (Apache-2.0) with a local LLM copilot.
+    OpenMetadata delivers the data catalog, business glossary + reference/master data,
+    data lineage and impact analysis, data-quality profiling + test suites, roles and
+    policies (access matrices), regulation classifications (GDPR / DORA / BaFin /
+    internal) and alerting. Apache Airflow (the stock Application Collection image)
+    seeds and drives OpenMetadata via its REST API and computes data-quality results
+    over PostgreSQL sample data (an "enterprise data warehouse" plus a "public
+    administration registry" external DB). A local SUSE-styled FastAPI UI is a
+    governance copilot: it reads OpenMetadata and uses Ollama to answer natural-language
+    discovery questions, draft glossary definitions, explain lineage/impact and
+    summarise data-quality status.
+
+    Prerequisites (install on the target cluster BEFORE creating an AIWorkload):
+      * SUSE AI Factory operator (owns the Blueprint / AIWorkload CRDs).
+      * The application-collection ClusterRepo + credentials secret.
+      * Two ADDITIONAL ClusterRepos for the upstream Apache-2.0 charts (see the
+        blueprint README, clusterrepos/):
+          - openmetadata → https://helm.open-metadata.org
+          - opensearch   → https://opensearch-project.github.io/helm-charts
+      * A default StorageClass (PostgreSQL, OpenSearch, Ollama use PVCs) and cert-manager.
+      * This is a LARGE workload (OpenSearch + OpenMetadata are JVM services): give it a
+        well-resourced node.
+
+    After importing, create an AIWorkload from this Blueprint in the AI Factory UI, run
+    the governance pipeline (seed → lineage → data quality → periodic review) from the
+    marketplace guide, open the OpenMetadata UI, then launch the copilot.
+  components:
+  # ----------------------------------------------------------------------- #
+  # PostgreSQL — OpenMetadata's backend DB (openmetadata_db) AND the sample data
+  # sources the DAGs seed: enterprise_dwh + gov_registry (the "public administration"
+  # external database). The extra DBs are created by the seed_governance DAG using the
+  # postgres superuser. Service: gov-db:5432.
+  # ----------------------------------------------------------------------- #
+  - chartName: postgresql
+    chartRepo: application-collection
+    chartVersion: 0.6.0
+    values:
+      fullnameOverride: gov-db
+      image:
+        registry: dp.apps.rancher.io
+        repository: containers/postgresql
+      auth:
+        # OpenMetadata's own DB + user (the chart creates the user, db and the
+        # `gov-db` secret; OpenMetadata reads the password from secret key `password`).
+        database: openmetadata_db
+        username: openmetadata_user
+        password: Governance-Demo-1
+        postgresPassword: GovAdmin-Demo-1
+      primary:
+        persistence:
+          enabled: true
+          size: 8Gi
+  # ----------------------------------------------------------------------- #
+  # OpenSearch (UPSTREAM, Apache-2.0) — OpenMetadata's search engine. Single-node,
+  # security plugin disabled (demo), http :9200. sysctlInit sets vm.max_map_count so
+  # no node-level sysctl prerequisite is needed. Service: opensearch:9200.
+  # ----------------------------------------------------------------------- #
+  - chartName: opensearch
+    chartRepo: opensearch
+    chartVersion: 3.7.0
+    values:
+      clusterName: opensearch
+      masterService: opensearch
+      singleNode: true
+      replicas: 1
+      opensearchJavaOpts: "-Xms1g -Xmx1g"
+      sysctlInit:
+        enabled: true
+      securityConfig:
+        enabled: false
+      extraEnvs:
+        - {name: DISABLE_SECURITY_PLUGIN, value: "true"}
+        - {name: DISABLE_INSTALL_DEMO_CONFIG, value: "true"}
+      persistence:
+        enabled: true
+        size: 20Gi
+      resources:
+        requests: {cpu: "500m", memory: "1536Mi"}
+        limits: {memory: "2Gi"}
+  # ----------------------------------------------------------------------- #
+  # OpenMetadata (UPSTREAM, Apache-2.0) — the governance server + UI (:8585).
+  #   * backend = the PostgreSQL above (external), reading its password from the
+  #     `gov-db` secret (key `password`);
+  #   * search = the OpenSearch above;
+  #   * pipelineServiceClientConfig.enabled=false → OpenMetadata does NOT deploy or
+  #     require its own ingestion Airflow; the AppCo Airflow drives it via REST.
+  # Default admin login: admin@open-metadata.org / admin (demo).
+  # ----------------------------------------------------------------------- #
+  - chartName: openmetadata
+    chartRepo: openmetadata
+    chartVersion: 1.13.1
+    values:
+      openmetadata:
+        config:
+          # External PostgreSQL backend.
+          database:
+            host: gov-db
+            port: 5432
+            driverClass: org.postgresql.Driver
+            dbScheme: postgresql
+            databaseName: openmetadata_db
+            auth:
+              username: openmetadata_user
+              password:
+                secretRef: gov-db
+                secretKey: password
+            dbParams: ""
+          # External OpenSearch.
+          elasticsearch:
+            enabled: true
+            host: opensearch
+            searchType: opensearch
+            port: 9200
+            scheme: http
+            auth:
+              enabled: false
+          # No bundled ingestion orchestrator — the AppCo Airflow drives OM via REST.
+          pipelineServiceClientConfig:
+            enabled: false
+          # Basic auth; admin@open-metadata.org bootstraps as the initial admin.
+          authorizer:
+            initialAdmins:
+            - "admin"
+            principalDomain: "open-metadata.org"
+          authentication:
+            provider: "basic"
+            enableSelfSignup: true
+          # Demo keys — replace for any real use.
+          fernetkey:
+            value: "cD5uS1yq0uJqM4t8oQ2r9v3wZ7xY6bN0aE1hK2mP4s="
+          jwtTokenConfiguration:
+            enabled: true
+  # ----------------------------------------------------------------------- #
+  # Apache Airflow — STOCK Application Collection image (no custom build). DAGs seed
+  # OpenMetadata via REST and compute data quality over PostgreSQL; they import only
+  # `requests` + `psycopg2` (both already in the image). DAGs delivered via git-sync.
+  # ----------------------------------------------------------------------- #
+  - chartName: apache-airflow
+    chartRepo: application-collection
+    chartVersion: 1.22.0
+    values:
+      executor: LocalExecutor
+      # Pin generated secret keys so the pod template is STABLE across Fleet reconciles
+      # (unset → the chart regenerates them each render → the deployment never converges).
+      fernetKey: "Wq7dJ2pL0aZx8sV3nR5tK9bM1cY4hG6uE0iO2fD8sQ0="
+      jwtSecret: "5c1b0a9e8d7f6c5b4a3e2d1c0b9a8f7e6d5c4b3a2e1d0c9b8a7f6e5d4c3b2a1e"
+      webserverSecretKey: "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+      redis:
+        enabled: false
+      flower:
+        enabled: false
+      images:
+        airflow:
+          repository: containers/apache-airflow
+          tag: 3.2.2-8.14
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+      dags:
+        gitSync:
+          enabled: true
+          repo: https://github.com/alessandro-festa/aif-community-demos.git
+          branch: main
+          ref: main
+          rev: HEAD
+          depth: 1
+          subPath: blueprints/data-governance-ollama/dags
+          period: 30s
+      env:
+      - name: OM_BASE_URL
+        value: http://openmetadata:8585
+      - name: OM_USER
+        value: admin@open-metadata.org
+      - name: OM_PASSWORD
+        value: admin
+      # Postgres superuser — used to create + seed the enterprise_dwh / gov_registry DBs.
+      - name: PGHOST
+        value: gov-db
+      - name: PGPORT
+        value: "5432"
+      - name: PG_ADMIN_USER
+        value: postgres
+      - name: PG_ADMIN_PASSWORD
+        value: GovAdmin-Demo-1
+      ingress:
+        apiServer:
+          enabled: true
+          ingressClassName: nginx
+          annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          hosts:
+          - name: data-governance-airflow
+            tls:
+              enabled: true
+  # ----------------------------------------------------------------------- #
+  # Ollama — local LLM for the governance copilot, CPU. Model chosen at import via the
+  # marketplace modelSizes selector ({{MODEL}} placeholder). Reachable at ollama:11434.
+  # ----------------------------------------------------------------------- #
+  - chartName: ollama
+    chartRepo: application-collection
+    chartVersion: 1.55.0
+    values:
+      fullnameOverride: ollama
+      image:
+        pullPolicy: IfNotPresent
+        registry: dp.apps.rancher.io
+        repository: containers/ollama
+        tag: 0.21.2-11.48
+      # Keep the chosen model resident (warm) — memory-friendly on CPU.
+      extraEnv:
+        - {name: OLLAMA_KEEP_ALIVE, value: "-1"}
+        - {name: OLLAMA_MAX_LOADED_MODELS, value: "1"}
+      ollama:
+        gpu:
+          enabled: false
+          draEnabled: false
+        models:
+          pull:
+          - "{{MODEL}}"
+          run:
+          - "{{MODEL}}"
+        port: 11434
+      persistentVolume:
+        enabled: true
+        accessModes:
+        - ReadWriteOnce
+        size: 20Gi
+      service:
+        port: 11434
+        type: ClusterIP

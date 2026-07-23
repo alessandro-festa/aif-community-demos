@@ -1,0 +1,121 @@
+id: data-governance-vllm
+displayName: Data Governance Copilot (vLLM, GPU)
+description: >-
+  Enterprise data governance on OpenMetadata (Apache-2.0) with a local LLM copilot.
+  OpenMetadata provides the catalog, business glossary + reference/master data, lineage
+  and impact analysis, data-quality test suites, roles/policies (access matrices),
+  regulation classifications and alerting. Apache Airflow (stock AppCo image) seeds and
+  drives OpenMetadata via REST and computes data quality over PostgreSQL sample data
+  (an enterprise DWH + a public-administration registry). A local UI copilot (vLLM, GPU)
+  answers discovery questions, drafts glossary terms and explains lineage/impact and DQ.
+category: governance
+tags: [governance, data-catalog, openmetadata, glossary, lineage, data-quality, airflow, vllm, gpu, regtech]
+blueprintFile: data-governance-vllm-1-0-0.yaml
+prerequisites:
+  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)",     kind: crd, name: blueprints.ai-factory.suse.com}
+  - {id: omrepo, label: "ClusterRepo: openmetadata (upstream)", kind: crd, name: clusters.catalog.cattle.io}
+  - {id: sc,    label: "Default StorageClass",                kind: default-storageclass}
+  - {id: certm, label: "cert-manager",                        kind: namespace, name: cert-manager}
+# The governance copilot UI the marketplace runs locally. Reads OpenMetadata's REST API
+# and talks to the vLLM router (OpenAI-compatible) — both over port-forwards; localhost
+# ports are auto-remapped to the random local ports the marketplace assigns.
+localFrontend:
+  dir: ui
+  runtime: python
+  install:
+    - "-r ui/requirements.txt"
+  entry: app.main:app
+  port: 8000
+  openPath: /
+  env:
+    OM_BASE_URL: "http://localhost:8585"
+    OM_USER: "admin@open-metadata.org"
+    OM_PASSWORD: "admin"
+    OPENAI_BASE_URL: "http://localhost:8000/v1"
+    LLM_MODEL: "Qwen/Qwen2.5-1.5B-Instruct"
+    OPENAI_API_KEY: "EMPTY"
+  portForwards:
+    - {name: openmetadata, service: openmetadata, local: 8585, remote: 8585}
+    - {name: vllm, service: vllm-router-service, local: 8000, remote: 80}
+# In-cluster component UIs the marketplace can port-forward on demand (button enabled
+# once the service is Ready). OpenMetadata's own UI is the rich governance surface.
+componentUIs:
+  - {name: openmetadata, label: "OpenMetadata UI", service: openmetadata, port: 8585, path: /}
+  - {name: airflow,      label: "Airflow UI",      service: apache-airflow-api-server, port: 8080, path: /}
+# The DAGs bpm triggers sequentially from the guide (trigger-dags action) — same order
+# as the manual steps below. Each waits for the previous to finish; they can still be run
+# manually in the Airflow UI. Defaults: apache-airflow-api-server:8080, admin/admin.
+airflowPipeline:
+  dags:
+    - {id: seed_governance, label: "Seed catalog, glossary, policies"}
+    - {id: build_lineage,   label: "Build lineage + risk map"}
+    - {id: data_quality,    label: "Profile + run quality rules"}
+    - {id: periodic_review, label: "Periodic currency review"}
+guide:
+  - title: Prerequisites — upstream ClusterRepos
+    body: |
+      This blueprint uses two **upstream Apache-2.0** charts that are not in the
+      Application Collection, so create their ClusterRepos on the target cluster **before
+      importing** (see `clusterrepos/` in the blueprint folder):
+
+      ```bash
+      kubectl apply -f clusterrepos/openmetadata-clusterrepo.yaml
+      kubectl apply -f clusterrepos/opensearch-clusterrepo.yaml
+      ```
+
+      Everything else (PostgreSQL, Airflow, vLLM) is Application Collection.
+  - title: Import the blueprint
+    body: |
+      Applies the Data Governance Copilot (vLLM) Blueprint CR to the selected cluster —
+      it adds it to the SUSE AI Factory catalog, it does not deploy anything yet.
+    action: {type: import}
+  - title: Create the AIWorkload (SUSE AI Factory UI)
+    body: |
+      In the SUSE AI Factory UI, go to **Blueprints → Data Governance Copilot (vLLM) →
+      Create AIWorkload**, choose a target **namespace**, and deploy. This is a large
+      workload — wait for PostgreSQL, **OpenSearch**, **OpenMetadata** (its migration job
+      then the server), Airflow and vLLM (GPU) to be Ready (several minutes). Enter the
+      namespace you chose below.
+    action: {type: namespace-input}
+  - title: Run the governance pipeline (Airflow)
+    body: |
+      Click **Run pipeline (Airflow)** below to seed and populate OpenMetadata
+      automatically (each step waits for the previous to finish). Prefer to drive it
+      yourself? Use the **Airflow UI** button (log in with **admin / admin**) and run the
+      same DAGs manually, in order:
+
+      1. `seed_governance` — creates the database services, the enterprise + public-admin
+         catalog, the **business glossary**, **classifications** (GDPR / DORA / BaFin /
+         internal regulations) and **teams/roles/policies** (access matrices); seeds the
+         PostgreSQL sample data.
+      2. `build_lineage` — adds **lineage** edges (architecture-as-lineage) and a data
+         **risk** classification, enabling impact analysis.
+      3. `data_quality` — profiles the data and runs standard + **financial** rule packs
+         (nulls/uniqueness/ranges, distribution & similarity, cross-checks, a custom
+         script rule), pushes results to OpenMetadata and raises an **alert**.
+      4. `periodic_review` — scans assets for stale ownership / currency and files review
+         tasks (review-process automation).
+    action: {type: trigger-dags}
+  - title: Explore governance in OpenMetadata
+    body: |
+      Use the **OpenMetadata UI** button below (login **admin@open-metadata.org / admin**)
+      to explore the populated platform:
+
+      - **Catalog** — the enterprise DWH and the public-administration registry, with
+        owners, tiers and regulation tags.
+      - **Glossary** — business terms / reference data.
+      - **Lineage** — the data-flow graph; open a table and use **Impact Analysis**.
+      - **Data Quality** — test suites with pass/fail, the profiler, and the alert.
+      - **Settings → Roles & Policies / Teams** — the access matrices.
+  - title: Launch the copilot
+    body: |
+      Starts `kubectl port-forward` to OpenMetadata (8585) and the vLLM router (8000) and runs the
+      SUSE Data Governance Copilot UI locally.
+    action: {type: start-frontend}
+  - title: Ask the copilot
+    body: |
+      Open the copilot and try it: **discover** ("which datasets hold PII owned by
+      finance?"), **draft a glossary definition** for a term, **explain the lineage /
+      impact** of a table, or **summarise data-quality** status and failing rules. The
+      copilot reads OpenMetadata's API and uses the local model to answer.
+    action: {type: open-url, url: "http://localhost:8000"}

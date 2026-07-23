@@ -1,0 +1,10 @@
+# Registers the upstream OpenSearch Helm repo as a ClusterRepo named "opensearch", so
+# the Blueprint CR component with `chartRepo: opensearch` resolves. OpenSearch is
+# Apache-2.0. Apply BEFORE importing the blueprint:
+#   kubectl apply -f opensearch-clusterrepo.yaml
+apiVersion: catalog.cattle.io/v1
+kind: ClusterRepo
+metadata:
+  name: opensearch
+spec:
+  url: https://opensearch-project.github.io/helm-charts
