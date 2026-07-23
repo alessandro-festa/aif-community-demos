@@ -572,7 +572,7 @@ spec:
                       },
                       "targets": [
                         {
-                          "expr": "sum by (model) (finops_daily_spend_usd)",
+                          "expr": "sum by (model) (last_over_time(finops_daily_spend_usd[1d]))",
                           "legendFormat": "{{model}}",
                           "refId": "A"
                         }
@@ -605,7 +605,7 @@ spec:
                       },
                       "targets": [
                         {
-                          "expr": "sum by (team_alias) (finops_daily_spend_usd)",
+                          "expr": "sum by (team_alias) (last_over_time(finops_daily_spend_usd[1d]))",
                           "legendFormat": "{{team_alias}}",
                           "refId": "A"
                         }
@@ -692,7 +692,7 @@ spec:
                       },
                       "targets": [
                         {
-                          "expr": "sum by (model) (finops_daily_tokens_total)",
+                          "expr": "sum by (model) (last_over_time(finops_daily_tokens_total[1d]))",
                           "legendFormat": "{{model}}",
                           "refId": "A"
                         }
@@ -700,7 +700,7 @@ spec:
                     },
                     {
                       "type": "row",
-                      "title": "Live gateway (real-time LiteLLM)",
+                      "title": "Live gateway (real-time LiteLLM \u2014 last 3h)",
                       "gridPos": {
                         "h": 1,
                         "w": 24,
@@ -733,7 +733,8 @@ spec:
                           "legendFormat": "{{model}}",
                           "refId": "A"
                         }
-                      ]
+                      ],
+                      "timeFrom": "3h"
                     },
                     {
                       "type": "timeseries",
@@ -760,7 +761,8 @@ spec:
                           "legendFormat": "{{team_alias}}",
                           "refId": "A"
                         }
-                      ]
+                      ],
+                      "timeFrom": "3h"
                     },
                     {
                       "type": "row",
