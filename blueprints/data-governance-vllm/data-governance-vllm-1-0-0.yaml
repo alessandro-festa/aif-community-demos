@@ -89,14 +89,16 @@ spec:
           enabled: true
           size: 8Gi
   # ----------------------------------------------------------------------- #
-  # OpenSearch (UPSTREAM, Apache-2.0) — OpenMetadata's search engine. Single-node,
-  # security plugin disabled (demo), http :9200. sysctlInit sets vm.max_map_count so
-  # no node-level sysctl prerequisite is needed. Service: opensearch:9200.
+  # OpenSearch (Application Collection, Apache-2.0) — OpenMetadata's search engine.
+  # Single-node, security plugin disabled (demo), http :9200. sysctlInit sets
+  # vm.max_map_count so no node-level sysctl prerequisite is needed. Service: opensearch:9200.
   # ----------------------------------------------------------------------- #
   - chartName: opensearch
-    chartRepo: opensearch
+    chartRepo: application-collection
     chartVersion: 3.7.0
     values:
+      imagePullSecrets:
+        - name: application-collection
       clusterName: opensearch
       masterService: opensearch
       singleNode: true
@@ -153,8 +155,16 @@ spec:
             auth:
               enabled: false
           # No bundled ingestion orchestrator — the AppCo Airflow drives OM via REST.
+          # Even disabled, the chart still injects AIRFLOW_PASSWORD from a secret; point it
+          # at the existing gov-db secret (value unused) so the pod doesn't fail on a
+          # missing `airflow-secrets`.
           pipelineServiceClientConfig:
             enabled: false
+            airflow:
+              auth:
+                password:
+                  secretRef: gov-db
+                  secretKey: password
           # Basic auth; admin@open-metadata.org bootstraps as the initial admin.
           authorizer:
             initialAdmins:

@@ -29,7 +29,7 @@ reference tables, not a matching engine).
 ## Architecture
 
 - **OpenMetadata** (upstream, Apache-2.0) — catalog/glossary/lineage/DQ/policies/alerts, UI on `:8585`.
-- **OpenSearch** (upstream, Apache-2.0) — OpenMetadata's search engine (single-node, `sysctlInit`
+- **OpenSearch** (AppCo, Apache-2.0) — OpenMetadata's search engine (single-node, `sysctlInit`
   sets `vm.max_map_count`, so no node-level sysctl prerequisite).
 - **PostgreSQL** (AppCo) — OpenMetadata's backend **and** the sample sources (`enterprise_dwh`, `gov_registry`).
 - **Apache Airflow** (AppCo, stock image) — the governance DAGs (`requests` + `psycopg2` only).
@@ -42,10 +42,10 @@ its own ingestion Airflow — the AppCo Airflow drives it via REST. No custom Op
 
 - SUSE AI Factory operator; the `application-collection` ClusterRepo (+ credentials secret);
   a default StorageClass; cert-manager.
-- Two **upstream ClusterRepos** (the charts are not in the Application Collection):
+- One **upstream ClusterRepo** — OpenMetadata isn't in the Application Collection. bpm
+  applies it automatically at import (`clusterResources`), or apply it manually:
   ```bash
   kubectl apply -f clusterrepos/openmetadata-clusterrepo.yaml
-  kubectl apply -f clusterrepos/opensearch-clusterrepo.yaml
   ```
 - This is a **large** workload (OpenSearch + OpenMetadata are JVM services) — use a
   well-resourced node.
