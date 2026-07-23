@@ -26,6 +26,8 @@ small local demo UI and a step-by-step guide.
 | Compliance | **DORA Compliance (vLLM)** | [`blueprints/dora-compliance-vllm`](blueprints/dora-compliance-vllm) | **GPU** | Same DORA compliance pipeline, with the analyst LLM served by vLLM on an NVIDIA GPU. Demo only, synthetic data. |
 | FinOps | **FinOps Multi-Model Gateway (Ollama)** | [`blueprints/finops-multimodel-ollama`](blueprints/finops-multimodel-ollama) | CPU | FinOps for a guarded, multi-model LLM gateway. A LiteLLM proxy serves three Ollama models at different per-token prices with guardrails; Grafana reconciles TOKEN spend (LiteLLM OSS spend logs → a Prometheus exporter) with INFRASTRUCTURE cost (OpenCost). Airflow creates per-team virtual keys + budgets and backfills synthetic history so the dashboards populate immediately; a local chat UI shows each reply's cost. |
 | FinOps | **FinOps Multi-Model Gateway (vLLM)** | [`blueprints/finops-multimodel-vllm`](blueprints/finops-multimodel-vllm) | **GPU** | Same FinOps multi-model gateway, with three Qwen sizes served by vLLM on NVIDIA GPUs. |
+| Data governance | **Data Governance Copilot (Ollama)** | [`blueprints/data-governance-ollama`](blueprints/data-governance-ollama) | CPU | Enterprise data governance on OpenMetadata (Apache-2.0): catalog + business glossary, data lineage + impact analysis, data-quality rule packs, roles/policies (access matrices) and regulation classifications. Airflow (stock image) seeds and drives OpenMetadata via REST over PostgreSQL sample data (an enterprise DWH + a public-administration registry); a local copilot UI (Ollama) answers discovery questions, drafts glossary terms and explains lineage/DQ. |
+| Data governance | **Data Governance Copilot (vLLM)** | [`blueprints/data-governance-vllm`](blueprints/data-governance-vllm) | **GPU** | Same data-governance stack, with the copilot LLM served by vLLM on an NVIDIA GPU. |
 
 Every blueprint folder contains:
 - `*-<version>.yaml` — the Blueprint CR to `kubectl apply`;
@@ -50,8 +52,8 @@ Prebuilt binaries are attached to each
 
 ```bash
 # pick the asset for your platform (darwin/linux, amd64/arm64):
-curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.5.0/bpm-linux-amd64
-curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.5.0/SHA256SUMS
+curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.6.0/bpm-linux-amd64
+curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.6.0/SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing && chmod +x bpm-linux-amd64
 ./bpm-linux-amd64   # open http://127.0.0.1:8900
 ```

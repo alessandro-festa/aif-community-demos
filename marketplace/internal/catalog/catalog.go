@@ -199,19 +199,23 @@ type GuideStep struct {
 
 // Blueprint is the full metadata for one catalog entry.
 type Blueprint struct {
-	ID              string           `yaml:"id" json:"id"`
-	DisplayName     string           `yaml:"displayName" json:"displayName"`
-	Description     string           `yaml:"description" json:"description"`
-	Category        string           `yaml:"category" json:"category"`
-	Tags            []string         `yaml:"tags" json:"tags"`
-	BlueprintFile   string           `yaml:"blueprintFile" json:"blueprintFile"`
-	Prerequisites   []Prerequisite   `yaml:"prerequisites" json:"prerequisites"`
-	LocalFrontend   *LocalFrontend   `yaml:"localFrontend" json:"localFrontend,omitempty"`
-	ComponentUIs    []ComponentUI    `yaml:"componentUIs" json:"componentUIs,omitempty"`
-	ImportWizard    *ImportWizard    `yaml:"importWizard" json:"importWizard,omitempty"`
-	ModelSizes      *ModelSizes      `yaml:"modelSizes" json:"modelSizes,omitempty"`
-	AirflowPipeline *AirflowPipeline `yaml:"airflowPipeline" json:"airflowPipeline,omitempty"`
-	Guide           []GuideStep      `yaml:"guide" json:"guide"`
+	ID            string         `yaml:"id" json:"id"`
+	DisplayName   string         `yaml:"displayName" json:"displayName"`
+	Description   string         `yaml:"description" json:"description"`
+	Category      string         `yaml:"category" json:"category"`
+	Tags          []string       `yaml:"tags" json:"tags"`
+	BlueprintFile string         `yaml:"blueprintFile" json:"blueprintFile"`
+	Prerequisites []Prerequisite `yaml:"prerequisites" json:"prerequisites"`
+	LocalFrontend *LocalFrontend `yaml:"localFrontend" json:"localFrontend,omitempty"`
+	ComponentUIs  []ComponentUI  `yaml:"componentUIs" json:"componentUIs,omitempty"`
+	// ClusterResources are extra manifests (paths relative to the blueprint dir) the
+	// marketplace applies with `kubectl apply` at import time, BEFORE the Blueprint CR —
+	// e.g. ClusterRepos for upstream Helm charts not in a pre-registered repo.
+	ClusterResources []string         `yaml:"clusterResources" json:"clusterResources,omitempty"`
+	ImportWizard     *ImportWizard    `yaml:"importWizard" json:"importWizard,omitempty"`
+	ModelSizes       *ModelSizes      `yaml:"modelSizes" json:"modelSizes,omitempty"`
+	AirflowPipeline  *AirflowPipeline `yaml:"airflowPipeline" json:"airflowPipeline,omitempty"`
+	Guide            []GuideStep      `yaml:"guide" json:"guide"`
 
 	// Dir is the absolute path to this blueprint's folder in the checkout
 	// (populated at load time, not from YAML).

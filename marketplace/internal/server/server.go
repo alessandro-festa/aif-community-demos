@@ -492,6 +492,21 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	}
 	emit := func(line string) { sse("log", line); flush() }
 
+	// Apply any blueprint-declared cluster prerequisite manifests (e.g. ClusterRepos for
+	// upstream Helm charts) BEFORE the CR, so they're registered by the time an AIWorkload
+	// deploys the components. Idempotent (kubectl apply).
+	for _, rel := range bp.ClusterResources {
+		resPath := filepath.Join(bp.Dir, rel)
+		sse("log", fmt.Sprintf("kubectl --context %s apply -f %s", kubeCtx, rel))
+		crCtx, crCancel := context.WithTimeout(r.Context(), 2*time.Minute)
+		err := kube.Apply(crCtx, kubeCtx, resPath, emit)
+		crCancel()
+		if err != nil {
+			sse("error", err.Error())
+			return
+		}
+	}
+
 	// Enforce required wizard inputs (e.g. a HuggingFace token for a gated model)
 	// before we touch the cluster.
 	if bp.ImportWizard != nil {
