@@ -28,7 +28,19 @@ from pydantic import BaseModel
 
 LITELLM_BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://localhost:4000").rstrip("/")
 LITELLM_MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "sk-guardrails-demo")
-HTTP_TIMEOUT = 120
+HTTP_TIMEOUT = int(os.environ.get("CHAT_TIMEOUT", "180"))
+# The chat UI uses a SINGLE small model that Ollama keeps warm. Memory is tight on
+# CPU, so we don't offer the 1.5B/3B here (loading them would evict the warm model
+# and can time out). The multi-model cost story lives in the backfilled dashboards,
+# and the generate_traffic DAG still exercises all three models.
+CHAT_MODEL = os.environ.get("CHAT_MODEL", "llama-3.2-1b")
+# Keep answers short + direct: faster on CPU, and no chain-of-thought / thinking output.
+SYSTEM_PROMPT = os.environ.get(
+    "CHAT_SYSTEM_PROMPT",
+    "You are a concise assistant. Answer directly in at most a few short sentences. "
+    "Do not explain your reasoning or show any thinking steps.",
+)
+MAX_TOKENS = int(os.environ.get("CHAT_MAX_TOKENS", "256"))
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 # Teams for the selector. The chat UI calls LiteLLM with the MASTER key and attaches
@@ -41,10 +53,29 @@ TEAMS = [
     {"alias": "marketing",    "use_case": "copywriting"},
     {"alias": "support",      "use_case": "helpdesk"},
 ]
-# Fallback model list if /v1/models can't be reached (matches the Blueprint CR).
-FALLBACK_MODELS = ["llama-3.2-1b", "qwen-2.5-1.5b", "qwen-2.5-3b"]
-
 app = FastAPI(title="FinOps Multi-Model Chat (SUSE)")
+
+
+@app.on_event("startup")
+def _warm_up() -> None:
+    """Pre-load the chat model in the background so the first message is fast; with
+    Ollama's OLLAMA_KEEP_ALIVE=-1 it then stays resident (warm)."""
+    import threading
+
+    def _warm() -> None:
+        try:
+            requests.post(
+                f"{LITELLM_BASE_URL}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {LITELLM_MASTER_KEY}"},
+                json={"model": CHAT_MODEL,
+                      "messages": [{"role": "user", "content": "hi"}],
+                      "max_tokens": 1},
+                timeout=HTTP_TIMEOUT,
+            )
+        except Exception:  # noqa: BLE001
+            pass  # best-effort; the model will load on the first real message
+
+    threading.Thread(target=_warm, daemon=True).start()
 
 
 def _team(alias: str) -> dict:
@@ -67,21 +98,10 @@ def health():
 
 @app.get("/api/config")
 def config():
-    """Models (from the proxy, falling back to the known list) + teams."""
-    models = FALLBACK_MODELS
-    try:
-        r = requests.get(
-            f"{LITELLM_BASE_URL}/v1/models",
-            headers={"Authorization": f"Bearer {LITELLM_MASTER_KEY}"},
-            timeout=15,
-        )
-        if r.ok:
-            ids = [m.get("id") for m in (r.json() or {}).get("data", []) if m.get("id")]
-            if ids:
-                models = ids
-    except Exception:  # noqa: BLE001
-        pass
-    return {"models": models, "teams": [{"alias": t["alias"], "use_case": t["use_case"]} for t in TEAMS]}
+    """The single warm chat model + teams. Only one model is exposed on purpose
+    (memory): the dashboards carry the multi-model cost story."""
+    return {"models": [CHAT_MODEL],
+            "teams": [{"alias": t["alias"], "use_case": t["use_case"]} for t in TEAMS]}
 
 
 class ChatReq(BaseModel):
@@ -103,8 +123,11 @@ def chat(req: ChatReq):
             },
             json={
                 "model": req.model,
-                "messages": [{"role": "user", "content": req.message}],
-                "max_tokens": 512,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": req.message},
+                ],
+                "max_tokens": MAX_TOKENS,
                 "temperature": 0.7,
             },
             timeout=HTTP_TIMEOUT,

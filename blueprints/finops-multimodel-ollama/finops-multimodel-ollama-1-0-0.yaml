@@ -88,6 +88,13 @@ spec:
         registry: dp.apps.rancher.io
         repository: containers/ollama
         tag: 0.21.2-11.48
+      # Memory is tight on CPU: keep exactly ONE model resident and never unload it,
+      # so the chat model (llama3.2:1b, warmed at startup via ollama.models.run) stays
+      # hot and the node doesn't try to hold all three at once. generate_traffic still
+      # works — Ollama swaps models in on demand when that DAG hits the larger ones.
+      extraEnv:
+        - {name: OLLAMA_KEEP_ALIVE, value: "-1"}
+        - {name: OLLAMA_MAX_LOADED_MODELS, value: "1"}
       ollama:
         gpu:
           enabled: false
