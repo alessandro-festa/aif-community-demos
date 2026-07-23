@@ -194,6 +194,11 @@ h2 { font-size: 1.2rem; margin: 0 0 4px; }
 .check .status { font-weight: 700; }
 .check .status.ok { color: var(--success); }
 .check .status.bad { color: var(--danger); }
+/* Airflow DAG pipeline (trigger-dags action). */
+.dag-list { list-style: none; padding: 0; margin: 12px 0; }
+.dag-list li { padding: 5px 0; border-bottom: 1px solid var(--border); }
+.dag-list li:last-child { border-bottom: none; }
+.dag-state { display: inline-block; width: 1.4em; font-weight: 700; }
 .wizard .wizard-opt { align-items: flex-start; cursor: pointer; }
 .wizard .wizard-opt input { margin-top: 3px; width: 16px; height: 16px; flex: 0 0 auto; }
 /* Free-text / secret wizard inputs (e.g. an HF token). */

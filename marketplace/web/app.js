@@ -709,6 +709,49 @@ function renderAction(step) {
 
   } else if (a.type === "open-url") {
     host.innerHTML = `<div class="section"><a href="${esc(a.url)}" target="_blank"><button class="primary">Open ${esc(a.url)}</button></a></div>`;
+
+  } else if (a.type === "trigger-dags") {
+    // One-click sequential run of the blueprint's Airflow DAGs (bpm triggers each
+    // via the Airflow REST API and waits for it to finish). The DAGs can still be
+    // run manually from the Airflow UI — this just automates the same sequence.
+    const dags = (bp.airflowPipeline && bp.airflowPipeline.dags) || [];
+    host.innerHTML = `<div class="section">
+      <button class="primary" id="do">Run pipeline (Airflow)</button>
+      <ul class="dag-list">
+        ${dags.map((d) => `<li data-dag="${esc(d.id)}">
+          <span class="dag-state">•</span>
+          <strong>${esc(d.label || d.id)}</strong> <span class="muted">${esc(d.id)}</span>
+        </li>`).join("")}
+      </ul>
+      <div class="error" id="err"></div></div>`;
+
+    const setState = (id, glyph, color) => {
+      const el = host.querySelector(`li[data-dag="${CSS.escape(id)}"] .dag-state`);
+      if (el) { el.textContent = glyph; el.style.color = color || "var(--text-muted)"; }
+    };
+    // Backend log/error lines are prefixed ▶ (running) / ✓ (success) / ✗ (failed)
+    // and name the dag as "(<id>)" or "<id>:" — map them onto the status glyphs.
+    const applyLine = (line) => {
+      for (const d of dags) {
+        if (!(line.includes(`(${d.id})`) || line.includes(`${d.id}:`))) continue;
+        if (line.startsWith("▶")) setState(d.id, "▶", "var(--accent)");
+        else if (line.startsWith("✓")) setState(d.id, "✓", "var(--success)");
+        else if (line.startsWith("✗")) setState(d.id, "✗", "var(--danger)");
+      }
+    };
+
+    document.getElementById("do").addEventListener("click", (e) => {
+      const err = document.getElementById("err");
+      err.textContent = "";
+      if (!state.namespace) { err.textContent = "Set the AIWorkload namespace in the previous step first."; return; }
+      dags.forEach((d) => setState(d.id, "•", ""));
+      e.target.disabled = true; e.target.innerHTML = `<span class="spinner"></span>Running…`;
+      streamPost(`/api/blueprints/${bp.id}/dags/run`, { namespace: state.namespace, context: state.bpContext }, {
+        onLog: (m) => { logLine(m); applyLine(m); },
+        onDone: (m) => { logLine("✓ " + m); e.target.disabled = false; e.target.textContent = "Re-run pipeline"; markDone(); },
+        onError: (m) => { logLine(m); applyLine(m); err.textContent = m; e.target.disabled = false; e.target.textContent = "Retry pipeline"; },
+      });
+    });
   }
 }
 

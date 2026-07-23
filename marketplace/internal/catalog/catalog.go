@@ -56,9 +56,32 @@ type ComponentUI struct {
 
 // Action is the optional operation attached to a guide step.
 type Action struct {
-	// Type is one of: import | namespace-input | start-frontend | stop-frontend | open-url.
+	// Type is one of: import | namespace-input | start-frontend | stop-frontend |
+	// open-url | trigger-dags.
 	Type string `yaml:"type" json:"type"`
 	URL  string `yaml:"url" json:"url"`
+}
+
+// AirflowDag is one DAG in a blueprint's Airflow pipeline.
+type AirflowDag struct {
+	ID    string `yaml:"id" json:"id"`
+	Label string `yaml:"label" json:"label"`
+}
+
+// AirflowPipeline declares the ordered DAGs bpm can trigger sequentially against
+// the in-cluster Airflow 3 API server. Service/port/user/password default to the
+// apache-airflow chart's values (apache-airflow-api-server:8080, admin/admin).
+// The "trigger-dags" guide action drives this pipeline; the DAGs can still be run
+// manually from the Airflow UI.
+type AirflowPipeline struct {
+	Service  string `yaml:"service" json:"service"` // default apache-airflow-api-server
+	Port     int    `yaml:"port" json:"port"`       // default 8080
+	User     string `yaml:"user" json:"user"`       // default admin
+	Password string `yaml:"password" json:"-"`      // default admin; never shipped to the browser
+	// TimeoutMinutes is how long to wait for each DAG run to finish before giving up
+	// (0 = default). Raise it for pipelines with heavy DAGs like model fine-tuning.
+	TimeoutMinutes int          `yaml:"timeoutMinutes" json:"timeoutMinutes,omitempty"`
+	Dags           []AirflowDag `yaml:"dags" json:"dags"`
 }
 
 // WizardOption is one toggleable choice in an import wizard. When selected, its
@@ -176,18 +199,19 @@ type GuideStep struct {
 
 // Blueprint is the full metadata for one catalog entry.
 type Blueprint struct {
-	ID            string         `yaml:"id" json:"id"`
-	DisplayName   string         `yaml:"displayName" json:"displayName"`
-	Description   string         `yaml:"description" json:"description"`
-	Category      string         `yaml:"category" json:"category"`
-	Tags          []string       `yaml:"tags" json:"tags"`
-	BlueprintFile string         `yaml:"blueprintFile" json:"blueprintFile"`
-	Prerequisites []Prerequisite `yaml:"prerequisites" json:"prerequisites"`
-	LocalFrontend *LocalFrontend `yaml:"localFrontend" json:"localFrontend,omitempty"`
-	ComponentUIs  []ComponentUI  `yaml:"componentUIs" json:"componentUIs,omitempty"`
-	ImportWizard  *ImportWizard  `yaml:"importWizard" json:"importWizard,omitempty"`
-	ModelSizes    *ModelSizes    `yaml:"modelSizes" json:"modelSizes,omitempty"`
-	Guide         []GuideStep    `yaml:"guide" json:"guide"`
+	ID              string           `yaml:"id" json:"id"`
+	DisplayName     string           `yaml:"displayName" json:"displayName"`
+	Description     string           `yaml:"description" json:"description"`
+	Category        string           `yaml:"category" json:"category"`
+	Tags            []string         `yaml:"tags" json:"tags"`
+	BlueprintFile   string           `yaml:"blueprintFile" json:"blueprintFile"`
+	Prerequisites   []Prerequisite   `yaml:"prerequisites" json:"prerequisites"`
+	LocalFrontend   *LocalFrontend   `yaml:"localFrontend" json:"localFrontend,omitempty"`
+	ComponentUIs    []ComponentUI    `yaml:"componentUIs" json:"componentUIs,omitempty"`
+	ImportWizard    *ImportWizard    `yaml:"importWizard" json:"importWizard,omitempty"`
+	ModelSizes      *ModelSizes      `yaml:"modelSizes" json:"modelSizes,omitempty"`
+	AirflowPipeline *AirflowPipeline `yaml:"airflowPipeline" json:"airflowPipeline,omitempty"`
+	Guide           []GuideStep      `yaml:"guide" json:"guide"`
 
 	// Dir is the absolute path to this blueprint's folder in the checkout
 	// (populated at load time, not from YAML).

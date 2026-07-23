@@ -20,6 +20,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/suse/blueprint-marketplace/internal/airflow"
 	"github.com/suse/blueprint-marketplace/internal/catalog"
 	"github.com/suse/blueprint-marketplace/internal/config"
 	"github.com/suse/blueprint-marketplace/internal/kube"
@@ -94,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/blueprints/{id}/service-status", s.handleServiceStatus)
 	mux.HandleFunc("POST /api/blueprints/{id}/component-ui/start", s.handleComponentUIStart)
 	mux.HandleFunc("POST /api/blueprints/{id}/component-ui/stop", s.handleComponentUIStop)
+	mux.HandleFunc("POST /api/blueprints/{id}/dags/run", s.handleDagsRun)
 	mux.HandleFunc("GET /api/processes", s.handleProcesses)
 
 	// Static web UI. Send no-store so browsers always fetch the current embedded
@@ -693,7 +695,135 @@ func (s *Server) handleComponentUIStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"stopped": req.Name})
 }
 
+type dagsRunReq struct {
+	Namespace string `json:"namespace"`
+	Context   string `json:"context"`
+}
+
+// handleDagsRun triggers a blueprint's Airflow DAGs sequentially (bpm-side
+// orchestration): it opens a temporary port-forward to the in-cluster Airflow API
+// server, then for each DAG unpauses → triggers → polls the run to completion,
+// stopping the whole pipeline on the first failure. Progress streams over SSE.
+func (s *Server) handleDagsRun(w http.ResponseWriter, r *http.Request) {
+	bp, ok := s.cat.Get(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("blueprint not found"))
+		return
+	}
+	if bp.AirflowPipeline == nil || len(bp.AirflowPipeline.Dags) == 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("blueprint has no airflowPipeline"))
+		return
+	}
+	var req dagsRunReq
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	sse, flush, ok := beginSSE(w)
+	if !ok {
+		return
+	}
+	kubeCtx := s.contextOr(r.Context(), req.Context)
+	if kubeCtx == "" {
+		sse("error", "no target cluster selected (set one in Settings)")
+		return
+	}
+	if strings.TrimSpace(req.Namespace) == "" {
+		sse("error", "set the AIWorkload namespace first")
+		return
+	}
+	emit := func(line string) { sse("log", line); flush() }
+
+	// Connection defaults mirror the apache-airflow chart's values.
+	pl := bp.AirflowPipeline
+	svc := valueOr(pl.Service, "apache-airflow-api-server")
+	remote := pl.Port
+	if remote == 0 {
+		remote = 8080
+	}
+	user := valueOr(pl.User, "admin")
+	pass := valueOr(pl.Password, "admin")
+	perDagTimeout := 60 * time.Minute // generous default: covers heavy DAGs (fine-tuning, training)
+	if pl.TimeoutMinutes > 0 {
+		perDagTimeout = time.Duration(pl.TimeoutMinutes) * time.Minute
+	}
+
+	// Reach the in-cluster Airflow API via a dedicated, temporary port-forward. It
+	// binds a random local port, so it can't clash with a user-opened "airflow"
+	// component-UI forward. Torn down when the pipeline finishes.
+	emit(fmt.Sprintf("port-forward svc/%s:%d …", svc, remote))
+	pf := catalog.PortForward{Name: "airflow-pipeline", Service: svc, Remote: remote}
+	fwd, err := s.pm.StartPortFwd(bp.ID, kubeCtx, req.Namespace, "/", pf)
+	if err != nil {
+		sse("error", err.Error())
+		return
+	}
+	defer s.pm.StopPortFwd(bp.ID, "airflow-pipeline")
+
+	cli := airflow.New(fwd.URL, user, pass)
+
+	for _, d := range pl.Dags {
+		label := valueOr(d.Label, d.ID)
+		emit(fmt.Sprintf("▶ %s (%s): triggering…", label, d.ID))
+
+		_ = cli.Unpause(r.Context(), d.ID) // best-effort: git-synced DAGs default paused
+
+		runID, err := cli.Trigger(r.Context(), d.ID)
+		if err != nil {
+			sse("error", fmt.Sprintf("✗ %s: %s", d.ID, err.Error()))
+			return
+		}
+
+		state, err := waitForDag(r.Context(), cli, d.ID, runID, perDagTimeout, emit)
+		if err != nil {
+			sse("error", fmt.Sprintf("✗ %s: %s", d.ID, err.Error()))
+			return
+		}
+		if state != "success" {
+			sse("error", fmt.Sprintf("✗ %s: run ended in state %q", d.ID, state))
+			return
+		}
+		emit(fmt.Sprintf("✓ %s (%s): success", label, d.ID))
+	}
+	sse("done", "Pipeline complete")
+}
+
+// waitForDag polls a DAG run until it reaches a terminal state (success/failed),
+// emitting each state transition. Gives up after timeout.
+func waitForDag(ctx context.Context, cli *airflow.Client, dagID, runID string, timeout time.Duration, emit func(string)) (string, error) {
+	const poll = 5 * time.Second
+	deadline := time.Now().Add(timeout)
+	var last string
+	for {
+		state, err := cli.RunState(ctx, dagID, runID)
+		if err != nil {
+			return "", err
+		}
+		if state != last {
+			emit(fmt.Sprintf("   %s: %s", dagID, state))
+			last = state
+		}
+		if state == "success" || state == "failed" {
+			return state, nil
+		}
+		if time.Now().After(deadline) {
+			return state, fmt.Errorf("timed out after %s (last state %q)", timeout, state)
+		}
+		select {
+		case <-ctx.Done():
+			return state, ctx.Err()
+		case <-time.After(poll):
+		}
+	}
+}
+
 // --- helpers ------------------------------------------------------------- //
+
+// valueOr returns v when non-empty, else def.
+func valueOr(v, def string) string {
+	if strings.TrimSpace(v) == "" {
+		return def
+	}
+	return v
+}
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")

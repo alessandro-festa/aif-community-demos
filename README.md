@@ -22,6 +22,10 @@ small local demo UI and a step-by-step guide.
 | Healthcare | **Chest X-ray Copilot (vLLM)** | [`blueprints/xray-copilot-vllm`](blueprints/xray-copilot-vllm) | **GPU** | Same X-ray analysis + search, with **LLaVA-Med 7B** (baseline) and optional **MedGemma 1.5 4B** served by vLLM. The import wizard collects a HuggingFace token for the gated MedGemma model. Demo only — not for clinical use. |
 | Customer support | **Insurance Support Copilot (Ollama)** | [`blueprints/insurance-support-ollama`](blueprints/insurance-support-ollama) | CPU | Insurance customer-support chatbot. Airflow generates a synthetic support dataset (customers/families/policies/claims/tickets) into Postgres + a Milvus semantic index; a chat UI (Ollama `qwen2.5vl`) uploads accident photos, opens/closes tickets, and suggests similar past cases — redacted (Presidio). Demo only, synthetic data. |
 | Customer support | **Insurance Support Copilot (vLLM)** | [`blueprints/insurance-support-vllm`](blueprints/insurance-support-vllm) | **GPU** | Same insurance support copilot, with `Qwen2.5-VL-7B` served by vLLM on a GPU (embeddings via a small CPU Ollama). Demo only, synthetic data. |
+| Compliance | **DORA Compliance (Ollama)** | [`blueprints/dora-compliance-ollama`](blueprints/dora-compliance-ollama) | CPU | DORA / BaFin ICT-incident compliance. Airflow simulates ICT incidents into Postgres, classifies them against BaFin Article 18 rules (severity + deadlines), builds report / vendor-risk marts, indexes incidents into Milvus, and flags SLA breaches; a local agent UI (Ollama) answers compliance questions and can run the whole pipeline. Demo only, synthetic data. |
+| Compliance | **DORA Compliance (vLLM)** | [`blueprints/dora-compliance-vllm`](blueprints/dora-compliance-vllm) | **GPU** | Same DORA compliance pipeline, with the analyst LLM served by vLLM on an NVIDIA GPU. Demo only, synthetic data. |
+| FinOps | **FinOps Multi-Model Gateway (Ollama)** | [`blueprints/finops-multimodel-ollama`](blueprints/finops-multimodel-ollama) | CPU | FinOps for a guarded, multi-model LLM gateway. A LiteLLM proxy serves three Ollama models at different per-token prices with guardrails; Grafana reconciles TOKEN spend (LiteLLM OSS spend logs → a Prometheus exporter) with INFRASTRUCTURE cost (OpenCost). Airflow creates per-team virtual keys + budgets and backfills synthetic history so the dashboards populate immediately; a local chat UI shows each reply's cost. |
+| FinOps | **FinOps Multi-Model Gateway (vLLM)** | [`blueprints/finops-multimodel-vllm`](blueprints/finops-multimodel-vllm) | **GPU** | Same FinOps multi-model gateway, with three Qwen sizes served by vLLM on NVIDIA GPUs. |
 
 Every blueprint folder contains:
 - `*-<version>.yaml` — the Blueprint CR to `kubectl apply`;
@@ -37,15 +41,17 @@ blueprints (**search + topic filter**), lets you pick a kube context (showing SU
 Factory readiness), imports a blueprint via `kubectl` — with an optional **pre-import
 wizard** (toggle options and enter secrets such as a HuggingFace token, injected into the
 Blueprint CR before apply) — and walks you through the guided demo, starting each
-blueprint's local frontend + `kubectl port-forward`s.
+blueprint's local frontend + `kubectl port-forward`s. For Airflow blueprints it can also
+**run the demo's DAG pipeline in one click** — it triggers the DAGs in order and waits for
+each to finish (you can still run them manually in the Airflow UI).
 
 Prebuilt binaries are attached to each
 [release](https://github.com/alessandro-festa/aif-community-demos/releases):
 
 ```bash
 # pick the asset for your platform (darwin/linux, amd64/arm64):
-curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.4.0/bpm-linux-amd64
-curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.4.0/SHA256SUMS
+curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.5.0/bpm-linux-amd64
+curl -LO https://github.com/alessandro-festa/aif-community-demos/releases/download/v0.5.0/SHA256SUMS
 shasum -a 256 -c SHA256SUMS --ignore-missing && chmod +x bpm-linux-amd64
 ./bpm-linux-amd64   # open http://127.0.0.1:8900
 ```
