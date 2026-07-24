@@ -14,6 +14,12 @@ The original used YOLO-World + a text-only LLM over detection metadata. This ver
 
 Blueprint CR: [`visiongpt-ollama-1-0-0.yaml`](visiongpt-ollama-1-0-0.yaml)
 
+## Architecture
+
+![visiongpt-ollama architecture diagram](../images/visiongpt-ollama.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/visiongpt-ollama.svg`](../images/visiongpt-ollama.svg).*
+
 ## Components
 
 | Component | Chart (App Collection) | Role |

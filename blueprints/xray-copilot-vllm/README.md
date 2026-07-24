@@ -7,6 +7,12 @@ medical vision-language model, and search a Milvus index of X-rays by **image**
 > ⚠️ **Demo only — not a medical device and not for clinical decision-making.**
 > Outputs are illustrative and may be wrong.
 
+## Architecture
+
+![xray-copilot-vllm architecture diagram](../images/xray-copilot-vllm.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/xray-copilot-vllm.svg`](../images/xray-copilot-vllm.svg).*
+
 ## Flow
 
 ```

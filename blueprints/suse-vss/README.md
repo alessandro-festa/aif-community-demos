@@ -7,6 +7,12 @@ connects to the in-cluster services over `kubectl port-forward`.
 
 Blueprint CR: [`suse-vss-minimal-1-0-0.yaml`](suse-vss-minimal-1-0-0.yaml)
 
+## Architecture
+
+![suse-vss architecture diagram](../images/suse-vss.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/suse-vss.svg`](../images/suse-vss.svg).*
+
 ## Components
 
 | Component | Chart (App Collection) | Role |

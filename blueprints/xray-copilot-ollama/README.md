@@ -7,6 +7,12 @@ Milvus index of X-rays by **image** (similarity) or **text** (semantic) using
 
 > ⚠️ **Demo only — not a medical device and not for clinical decision-making.**
 
+## Architecture
+
+![xray-copilot-ollama architecture diagram](../images/xray-copilot-ollama.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/xray-copilot-ollama.svg`](../images/xray-copilot-ollama.svg).*
+
 ## Flow
 
 ```

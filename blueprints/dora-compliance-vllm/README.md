@@ -23,6 +23,12 @@ served by Ollama with a model-size selector, no GPU needed), see
 
 Blueprint CR: [`dora-compliance-vllm-1-0-0.yaml`](dora-compliance-vllm-1-0-0.yaml)
 
+## Architecture
+
+![dora-compliance-vllm architecture diagram](../images/dora-compliance-vllm.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/dora-compliance-vllm.svg`](../images/dora-compliance-vllm.svg).*
+
 ## Components (all from the SUSE Application Collection)
 
 | Component | Chart | Role |

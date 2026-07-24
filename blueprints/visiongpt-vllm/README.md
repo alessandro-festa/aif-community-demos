@@ -12,6 +12,12 @@ the model endpoint differs.
 
 Blueprint CR: [`visiongpt-vllm-1-0-0.yaml`](visiongpt-vllm-1-0-0.yaml)
 
+## Architecture
+
+![visiongpt-vllm architecture diagram](../images/visiongpt-vllm.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/visiongpt-vllm.svg`](../images/visiongpt-vllm.svg).*
+
 ## Components
 
 | Component | Chart (App Collection) | Role |

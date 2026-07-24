@@ -30,6 +30,12 @@ Airflow backfill DAG ─► remote-write (backdated samples) ──────�
 > component ships the **multi-arch upstream image** `ghcr.io/berriai/litellm-database`
 > so it runs on **arm64**. On amd64, prefer `registry.suse.com/ai/containers/litellm-database:v1.81.13`.
 
+## Architecture
+
+![finops-multimodel-ollama architecture diagram](../images/finops-multimodel-ollama.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/finops-multimodel-ollama.svg`](../images/finops-multimodel-ollama.svg).*
+
 ## Components
 
 | Component | Chart (repo) | Notes |

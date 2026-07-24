@@ -8,6 +8,12 @@ accident-photo vision is served by **Qwen2.5-VL-7B on vLLM**.
 > ⚠️ **Demo only.** All data is **synthetic**. Presidio redaction is best-effort —
 > pair with access control + encryption for real use.
 
+## Architecture
+
+![insurance-support-vllm architecture diagram](../images/insurance-support-vllm.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/insurance-support-vllm.svg`](../images/insurance-support-vllm.svg).*
+
 ## Flow
 
 ```

@@ -22,6 +22,12 @@ Ollama directly), the guardrails you select are always applied.
 > amd64 cluster, prefer the SUSE-supported image — swap the `image:` block of the
 > `litellm` component in `litellm-guardrails-1-0-0.yaml` back to it.
 
+## Architecture
+
+![litellm-guardrails architecture diagram](../images/litellm-guardrails.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/litellm-guardrails.svg`](../images/litellm-guardrails.svg).*
+
 ## Components
 
 | Component | Chart (repo) | Image | Notes |

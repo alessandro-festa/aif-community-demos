@@ -17,6 +17,12 @@ and UI are identical; only the LLM endpoint differs.
 
 Blueprint CR: [`fraud-detection-vllm-1-0-0.yaml`](fraud-detection-vllm-1-0-0.yaml)
 
+## Architecture
+
+![fraud-detection-vllm architecture diagram](../images/fraud-detection-vllm.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/fraud-detection-vllm.svg`](../images/fraud-detection-vllm.svg).*
+
 ## Components (all from the SUSE Application Collection)
 
 | Component | Chart | Role |

@@ -21,6 +21,12 @@ served by vLLM), see [`../dora-compliance-vllm`](../dora-compliance-vllm).
 
 Blueprint CR: [`dora-compliance-ollama-1-0-0.yaml`](dora-compliance-ollama-1-0-0.yaml)
 
+## Architecture
+
+![dora-compliance-ollama architecture diagram](../images/dora-compliance-ollama.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/dora-compliance-ollama.svg`](../images/dora-compliance-ollama.svg).*
+
 ## Components (all from the SUSE Application Collection)
 
 | Component | Chart | Role |

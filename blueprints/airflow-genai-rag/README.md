@@ -9,6 +9,12 @@ locally on **Ollama** (CPU, no GPU, no API keys, no data leaving the cluster).
 
 Blueprint CR: [`airflow-genai-rag-1-0-0.yaml`](airflow-genai-rag-1-0-0.yaml)
 
+## Architecture
+
+![airflow-genai-rag architecture diagram](../images/airflow-genai-rag.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/airflow-genai-rag.svg`](../images/airflow-genai-rag.svg).*
+
 ## Components
 
 | Component | Chart (App Collection) | Role |

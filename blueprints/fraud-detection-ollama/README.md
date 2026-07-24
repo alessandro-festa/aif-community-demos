@@ -16,6 +16,12 @@ served by vLLM), see [`../fraud-detection-vllm`](../fraud-detection-vllm).
 
 Blueprint CR: [`fraud-detection-ollama-1-0-0.yaml`](fraud-detection-ollama-1-0-0.yaml)
 
+## Architecture
+
+![fraud-detection-ollama architecture diagram](../images/fraud-detection-ollama.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/fraud-detection-ollama.svg`](../images/fraud-detection-ollama.svg).*
+
 ## Components (all from the SUSE Application Collection)
 
 | Component | Chart | Role |

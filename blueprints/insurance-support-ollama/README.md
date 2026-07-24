@@ -8,6 +8,12 @@ Presidio.
 > ⚠️ **Demo only.** All data is **synthetic**. Presidio redaction is best-effort and
 > is a guardrail, not a guarantee — pair with access control + encryption for real use.
 
+## Architecture
+
+![insurance-support-ollama architecture diagram](../images/insurance-support-ollama.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/insurance-support-ollama.svg`](../images/insurance-support-ollama.svg).*
+
 ## Flow
 
 ```

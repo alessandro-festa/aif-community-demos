@@ -28,6 +28,10 @@ reference tables, not a matching engine).
 
 ## Architecture
 
+![data-governance-vllm architecture diagram](../images/data-governance-vllm.png)
+
+*Every component runs on **SUSE AI Factory** (Kubernetes / Rancher). The demo UI is shown as an example only and is not part of the product. Vector source: [`../images/data-governance-vllm.svg`](../images/data-governance-vllm.svg).*
+
 - **OpenMetadata** (upstream, Apache-2.0) — catalog/glossary/lineage/DQ/policies/alerts, UI on `:8585`.
 - **OpenSearch** (AppCo, Apache-2.0) — OpenMetadata's search engine (single-node, `sysctlInit`
   sets `vm.max_map_count`, so no node-level sysctl prerequisite).
