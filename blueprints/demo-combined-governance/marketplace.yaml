@@ -1,0 +1,103 @@
+id: demo-combined-governance
+displayName: "Demo Combined: Data Governance Copilot (Ollama, CPU)"
+description: >-
+  Part 3 of 3 of the combined demo stack — frontend + guide only. Deploy the shared stack
+  first with "Demo Combined: DORA Compliance" (it creates ONE AIWorkload with Ollama,
+  Airflow, OpenSearch and OpenMetadata shared across all three demos), then come back here,
+  enter that SAME namespace below, and run the governance pipeline + copilot. OpenMetadata
+  provides the catalog, business glossary + reference/master data, lineage and impact
+  analysis, data-quality test suites, roles/policies (access matrices), regulation
+  classifications and alerting. The shared Airflow seeds and drives OpenMetadata via REST
+  and computes data quality over PostgreSQL sample data. A local UI copilot (Ollama) answers
+  discovery questions, drafts glossary terms and explains lineage/impact and DQ.
+category: governance
+tags: [demo-combined, governance, data-catalog, openmetadata, glossary, lineage, data-quality, airflow, ollama, regtech]
+prerequisites:
+  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
+  - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
+  - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
+# The governance copilot UI the marketplace runs locally. Reads OpenMetadata's REST API
+# and talks to Ollama (OpenAI-compatible) — both over port-forwards; localhost ports are
+# auto-remapped to the random local ports the marketplace assigns.
+localFrontend:
+  dir: ui
+  runtime: python
+  install:
+    - "-r ui/requirements.txt"
+  entry: app.main:app
+  port: 8000
+  openPath: /
+  env:
+    OM_BASE_URL: "http://localhost:8585"
+    OM_USER: "admin@open-metadata.org"
+    OM_PASSWORD: "admin"
+    OPENAI_BASE_URL: "http://localhost:11434/v1"
+    LLM_MODEL: "qwen2.5:0.5b"
+    OPENAI_API_KEY: "EMPTY"
+  portForwards:
+    - {name: openmetadata, service: openmetadata, local: 8585, remote: 8585}
+    - {name: ollama, service: ollama, local: 11434, remote: 11434}
+# In-cluster component UIs the marketplace can port-forward on demand (button enabled
+# once the service is Ready). OpenMetadata's own UI is the rich governance surface.
+componentUIs:
+  - {name: openmetadata, label: "OpenMetadata UI", service: openmetadata, port: 8585, path: /}
+  - {name: airflow,      label: "Airflow UI",      service: apache-airflow-api-server, port: 8080, path: /}
+# The DAGs bpm triggers sequentially from the guide (trigger-dags action) — same order
+# as the manual steps below. Each waits for the previous to finish; they can still be run
+# manually in the Airflow UI. Defaults: apache-airflow-api-server:8080, admin/admin.
+airflowPipeline:
+  dags:
+    - {id: seed_governance, label: "Seed catalog, glossary, policies"}
+    - {id: build_lineage,   label: "Build lineage + risk map"}
+    - {id: data_quality,    label: "Profile + run quality rules"}
+    - {id: periodic_review, label: "Periodic currency review"}
+guide:
+  - title: Point at the shared namespace
+    body: |
+      This blueprint has no CR of its own — it's a frontend + guide for the shared stack
+      deployed by **Demo Combined: DORA Compliance**. If you haven't already, import that
+      blueprint and create its AIWorkload first. Enter the SAME namespace you used there.
+      Wait for OpenSearch and OpenMetadata to be Ready (they take the longest).
+    action: {type: namespace-input}
+  - title: Run the governance pipeline (Airflow)
+    body: |
+      Click **Run pipeline (Airflow)** below to seed and populate OpenMetadata
+      automatically (each step waits for the previous to finish). Prefer to drive it
+      yourself? Use the **Airflow UI** button (log in with **admin / admin**) and run the
+      same DAGs manually, in order:
+
+      1. `seed_governance` — creates the database services, the enterprise + public-admin
+         catalog, the **business glossary**, **classifications** (GDPR / DORA / BaFin /
+         internal regulations) and **teams/roles/policies** (access matrices); seeds the
+         PostgreSQL sample data.
+      2. `build_lineage` — adds **lineage** edges (architecture-as-lineage) and a data
+         **risk** classification, enabling impact analysis.
+      3. `data_quality` — profiles the data and runs standard + **financial** rule packs
+         (nulls/uniqueness/ranges, distribution & similarity, cross-checks, a custom
+         script rule), pushes results to OpenMetadata and raises an **alert**.
+      4. `periodic_review` — scans assets for stale ownership / currency and files review
+         tasks (review-process automation).
+    action: {type: trigger-dags}
+  - title: Explore governance in OpenMetadata
+    body: |
+      Use the **OpenMetadata UI** button below (login **admin@open-metadata.org / admin**)
+      to explore the populated platform:
+
+      - **Catalog** — the enterprise DWH and the public-administration registry, with
+        owners, tiers and regulation tags.
+      - **Glossary** — business terms / reference data.
+      - **Lineage** — the data-flow graph; open a table and use **Impact Analysis**.
+      - **Data Quality** — test suites with pass/fail, the profiler, and the alert.
+      - **Settings → Roles & Policies / Teams** — the access matrices.
+  - title: Launch the copilot
+    body: |
+      Starts `kubectl port-forward` to OpenMetadata (8585) and Ollama (11434) and runs the
+      SUSE Data Governance Copilot UI locally.
+    action: {type: start-frontend}
+  - title: Ask the copilot
+    body: |
+      Open the copilot and try it: **discover** ("which datasets hold PII owned by
+      finance?"), **draft a glossary definition** for a term, **explain the lineage /
+      impact** of a table, or **summarise data-quality** status and failing rules. The
+      copilot reads OpenMetadata's API and uses the local model to answer.
+    action: {type: open-url, url: "http://localhost:8000"}

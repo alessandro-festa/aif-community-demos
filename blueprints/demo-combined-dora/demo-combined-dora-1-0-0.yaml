@@ -1,0 +1,707 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: demo-combined-dora
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: demo-combined-dora-1-0-0
+# Combined demo stack — DORA Compliance + FinOps Multi-Model Gateway + Data Governance
+# Copilot, deployed as ONE AIWorkload in ONE namespace so all three demos can run
+# side by side on a single server. This is the ONLY one of the three "demo-combined-*"
+# blueprints that carries a Blueprint CR / deploys anything — "demo-combined-finops" and
+# "demo-combined-governance" are frontend-only siblings that point their local UI + guide
+# at the namespace created here.
+#
+# What's SHARED (declared once, one instance for all three domains):
+#   * ollama    — application-collection, CPU, ONE tiny model (qwen2.5:0.5b) for maximum
+#                 demo speed (precision is not a concern for this combined demo).
+#   * apache-airflow — application-collection, LocalExecutor. DAGs for all three domains
+#                 are git-synced from this blueprint's dags/{dora,finops,governance}/
+#                 folders (Airflow's DAG scan is recursive) and merged into one instance.
+#   * qdrant    — suse-ai-registry (oci://registry.suse.com/ai/charts/qdrant). Replaces
+#                 DORA's original Milvus: same REST-only access pattern, far lighter
+#                 footprint (no etcd/MinIO/Kafka). ⚠ chartVersion below (1.17.0) mirrors
+#                 the confirmed image tag v1.17.0 — verify against the actual chart
+#                 version exposed by `helm search repo` / the AI Factory catalog before
+#                 first import, and adjust if the Helm chart itself is versioned
+#                 differently from the app it packages (this repo's litellm entry follows
+#                 the same "chart version == app version" convention).
+#
+# What's PER-DOMAIN (one each, distinct fullnameOverrides so there's no collision):
+#   * DORA:       dora-db (postgresql, application-collection)
+#   * FinOps:     litellm (suse-ai-registry) + its bundled Postgres + a Prometheus
+#                 spend exporter, prometheus, grafana, opencost (all application-collection)
+#   * Governance: gov-db (postgresql, bitnami — needs pgcrypto), opensearch
+#                 (application-collection), openmetadata (upstream)
+#
+# Trimmed for speed vs. the standalone FinOps blueprint: the LiteLLM guardrails
+# (Presidio PII masking/blocking, prompt-injection detection) and their import wizard
+# are DROPPED here — they add two extra pods that aren't needed for the core DORA /
+# FinOps / Governance demo narrative. LiteLLM's guardrails list is empty; re-add the
+# presidio extraResources + proxy_config.guardrails from finops-multimodel-ollama's CR
+# if you want them back.
+#
+# Prerequisites (install on the target cluster BEFORE creating an AIWorkload):
+#   * SUSE AI Factory operator (owns the Blueprint / AIWorkload CRDs).
+#   * The application-collection ClusterRepo + credentials secret (also the pull secret
+#     for the LiteLLM/Qdrant images) and the suse-ai-registry ClusterRepo.
+#   * A default StorageClass (Ollama, Postgres x2, OpenSearch, Prometheus, Grafana,
+#     Qdrant all use PVCs) and cert-manager.
+#   * This is a LARGE, multi-domain workload (OpenSearch + OpenMetadata are JVM
+#     services) — give it a well-resourced node and expect several minutes to converge.
+#
+# Import via the Blueprint Marketplace (this blueprint only), create ONE AIWorkload
+# from it in the AI Factory UI, note the namespace, then run each domain's guide
+# (this one for DORA, "demo-combined-finops" / "demo-combined-governance" for the
+# other two, entering the SAME namespace in their guide's namespace-input step).
+#
+# ⚠ Demo only, unsupported. Passwords/keys below are placeholders.
+spec:
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
+  displayName: Demo Combined — DORA + FinOps + Data Governance (Ollama, CPU)
+  version: 1.0.0
+  description: |
+    Combined demo: EU DORA ICT-incident compliance, a guarded multi-model FinOps
+    gateway, and an OpenMetadata-based data-governance copilot — all in ONE namespace,
+    sharing one Ollama model, one Airflow, and one Qdrant vector store so the whole
+    stack starts once and fits on a single server.
+
+    DORA: Airflow simulates ICT incidents, classifies them against BaFin Article 18
+    thresholds, builds compliance marts in PostgreSQL and indexes them in Qdrant; a
+    local LLM explains incidents and acts as a compliance agent.
+
+    FinOps: a LiteLLM proxy exposes three differently-priced logical models (all
+    backed by the same fast Ollama model for demo speed); Airflow creates per-team
+    virtual keys/budgets and backfills spend history; Grafana reconciles token spend
+    (LiteLLM) and infra cost (OpenCost).
+
+    Data Governance: OpenMetadata provides the catalog, glossary, lineage, data-quality
+    suites and policies; Airflow seeds and drives it via REST; a local copilot answers
+    discovery questions using the same shared LLM.
+
+    Import this blueprint, create ONE AIWorkload, then follow this guide for DORA and
+    the "demo-combined-finops" / "demo-combined-governance" sibling blueprints'
+    guides (same namespace) for the other two local frontends.
+  components:
+  # ----------------------------------------------------------------------- #
+  # SHARED — Ollama: ONE tiny CPU model for all three domains (max demo speed).
+  # ----------------------------------------------------------------------- #
+  - chartName: ollama
+    chartRepo: application-collection
+    chartVersion: 1.55.0
+    values:
+      fullnameOverride: ollama
+      image:
+        pullPolicy: IfNotPresent
+        registry: dp.apps.rancher.io
+        repository: containers/ollama
+        tag: 0.21.2-11.48
+      # Keep the one shared model resident (warm) — memory-friendly on CPU, and there's
+      # nothing else to swap to since every domain targets the same model.
+      extraEnv:
+        - {name: OLLAMA_KEEP_ALIVE, value: "-1"}
+        - {name: OLLAMA_MAX_LOADED_MODELS, value: "1"}
+      ollama:
+        gpu:
+          enabled: false
+          draEnabled: false
+        models:
+          pull:
+          - qwen2.5:0.5b
+          run:
+          - qwen2.5:0.5b
+        port: 11434
+      persistentVolume:
+        enabled: true
+        accessModes:
+        - ReadWriteOnce
+        size: 20Gi
+      service:
+        port: 11434
+        type: ClusterIP
+  # ----------------------------------------------------------------------- #
+  # SHARED — Qdrant: DORA's vector store (replaces Milvus). REST on :6333.
+  # ----------------------------------------------------------------------- #
+  - chartName: qdrant
+    chartRepo: suse-ai-registry
+    chartVersion: 1.17.0  # ⚠ verify — see note at top of file
+    values:
+      fullnameOverride: qdrant
+      persistence:
+        accessModes: ["ReadWriteOnce"]
+        size: 5Gi
+      service:
+        type: ClusterIP
+  # ----------------------------------------------------------------------- #
+  # DORA — PostgreSQL: raw incidents, classifications and compliance marts.
+  # ----------------------------------------------------------------------- #
+  - chartName: postgresql
+    chartRepo: application-collection
+    chartVersion: 0.6.0
+    values:
+      fullnameOverride: dora-db
+      image:
+        registry: dp.apps.rancher.io
+        repository: containers/postgresql
+      auth:
+        database: dora
+        username: dora
+        password: dora
+        postgresPassword: doraadmin
+      primary:
+        persistence:
+          enabled: true
+          size: 8Gi
+  # ----------------------------------------------------------------------- #
+  # FinOps — LiteLLM: guarded (baseline, no guardrails) multi-model gateway.
+  # Three logical, differently-priced model names all map to the ONE shared Ollama
+  # model — preserves the FinOps chargeback/pricing story while inference stays fast.
+  # store_model_in_db: true so per-team virtual keys + budgets work (finops_setup DAG).
+  # extraResources: the LiteLLM Prometheus spend exporter (reads this component's
+  # bundled Postgres). Reachable at http://litellm:4000.
+  # ----------------------------------------------------------------------- #
+  - chartName: litellm
+    chartRepo: suse-ai-registry
+    chartVersion: 1.81.13
+    values:
+      fullnameOverride: litellm
+      # NOTE: SUSE AI litellm-database image is amd64-only. The upstream ghcr image is
+      # multi-arch — use it for arm64 (Apple-silicon) clusters; on amd64, prefer
+      # registry.suse.com/ai/containers/litellm-database:v1.81.13.
+      image:
+        registry: ghcr.io
+        repository: berriai/litellm-database
+        tag: main-stable
+        pullPolicy: IfNotPresent
+      imagePullSecrets:
+      - application-collection
+      masterkey: sk-guardrails-demo
+      service:
+        type: ClusterIP
+        port: 4000
+      # Bundled single-node Postgres. Service name is "<release>-postgresql", i.e.
+      # "litellm-postgresql" — verify with `kubectl -n <ns> get svc` if your release
+      # name differs, and adjust LITELLM_DB_HOST below to match.
+      db:
+        deployStandalone: true
+        database: litellm
+      postgresql:
+        architecture: standalone
+        auth:
+          username: litellm
+          database: litellm
+          password: ChangeMe-litellm-db-password
+          postgres-password: ChangeMe-litellm-db-password
+      proxy_config:
+        general_settings:
+          master_key: os.environ/PROXY_MASTER_KEY
+          store_model_in_db: true
+        litellm_settings:
+          drop_params: true
+        # Three price tiers, all backed by the ONE shared fast model (demo speed).
+        model_list:
+        - model_name: llama-3.2-1b
+          litellm_params:
+            model: ollama_chat/qwen2.5:0.5b
+            api_base: http://ollama:11434
+            input_cost_per_token: 0.0000001    # $0.10 / 1M input tokens
+            output_cost_per_token: 0.0000002   # $0.20 / 1M output tokens
+        - model_name: qwen-2.5-1.5b
+          litellm_params:
+            model: ollama_chat/qwen2.5:0.5b
+            api_base: http://ollama:11434
+            input_cost_per_token: 0.0000003    # $0.30 / 1M
+            output_cost_per_token: 0.0000006   # $0.60 / 1M
+        - model_name: qwen-2.5-3b
+          litellm_params:
+            model: ollama_chat/qwen2.5:0.5b
+            api_base: http://ollama:11434
+            input_cost_per_token: 0.0000008    # $0.80 / 1M
+            output_cost_per_token: 0.0000016   # $1.60 / 1M
+        guardrails: []  # guardrails/Presidio dropped from the combined demo — see header
+      extraResources:
+      # --- LiteLLM Prometheus exporter (reads the LiteLLM Postgres; OSS) ---
+      - apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: litellm-exporter
+          labels: {app: litellm-exporter}
+        spec:
+          replicas: 1
+          selector: {matchLabels: {app: litellm-exporter}}
+          template:
+            metadata:
+              labels: {app: litellm-exporter}
+              # No prometheus.io/scrape annotation on purpose: prometheus already
+              # scrapes this exporter via the explicit `litellm-exporter` job in
+              # extraScrapeConfigs — an annotation here would double-scrape it.
+            spec:
+              containers:
+              - name: exporter
+                image: docker.io/nicholascecere/exporter-litellm:latest
+                ports: [{containerPort: 9090}]
+                env:
+                - {name: LITELLM_DB_HOST, value: litellm-postgresql}
+                - {name: LITELLM_DB_PORT, value: "5432"}
+                - {name: LITELLM_DB_NAME, value: litellm}
+                - {name: LITELLM_DB_USER, value: litellm}
+                - {name: LITELLM_DB_PASSWORD, value: ChangeMe-litellm-db-password}
+                - {name: METRICS_PORT, value: "9090"}
+                - {name: METRICS_UPDATE_INTERVAL, value: "5"}
+                - {name: METRICS_SPEND_WINDOW, value: "30d"}
+                readinessProbe:
+                  httpGet: {path: /metrics, port: 9090}
+                  initialDelaySeconds: 15
+                  periodSeconds: 15
+                resources:
+                  requests: {cpu: 50m, memory: 128Mi}
+      - apiVersion: v1
+        kind: Service
+        metadata:
+          name: litellm-exporter
+          labels: {app: litellm-exporter}
+        spec:
+          selector: {app: litellm-exporter}
+          ports: [{name: metrics, port: 9090, targetPort: 9090}]
+  # ----------------------------------------------------------------------- #
+  # FinOps — Prometheus: remote-write receiver + 30d out-of-order window ON so the
+  # backfill DAG can inject backdated samples. Scrapes OpenCost + the LiteLLM exporter.
+  # ----------------------------------------------------------------------- #
+  - chartName: prometheus
+    chartRepo: application-collection
+    chartVersion: 29.13.1
+    values:
+      global:
+        imagePullSecrets: [application-collection]
+      alertmanager:
+        enabled: false
+      prometheus-pushgateway:
+        enabled: false
+      # Disabled: binds hostPort 9100, would collide with an existing cluster
+      # monitoring stack. OpenCost doesn't need it.
+      prometheus-node-exporter:
+        enabled: false
+      server:
+        extraFlags:
+          - web.enable-lifecycle
+          - web.enable-remote-write-receiver
+        tsdb:
+          out_of_order_time_window: 30d
+        retention: "30d"
+        persistentVolume:
+          enabled: true
+          size: 12Gi
+      extraScrapeConfigs: |
+        - job_name: opencost
+          honor_labels: true
+          scrape_interval: 1m
+          metrics_path: /metrics
+          static_configs:
+            - targets: ['opencost:9003']
+        - job_name: litellm-exporter
+          scrape_interval: 10s
+          metrics_path: /metrics
+          static_configs:
+            - targets: ['litellm-exporter:9090']
+  # ----------------------------------------------------------------------- #
+  # FinOps — Grafana: Prometheus datasource + the provisioned FinOps dashboard.
+  # Reachable at http://grafana (port 80). Login: admin / admin (demo).
+  # ----------------------------------------------------------------------- #
+  - chartName: grafana
+    chartRepo: application-collection
+    chartVersion: 12.7.2
+    values:
+      global:
+        imagePullSecrets: [application-collection]
+      fullnameOverride: grafana
+      adminUser: admin
+      adminPassword: admin
+      service:
+        type: ClusterIP
+        port: 80
+      persistence:
+        enabled: true
+        size: 5Gi
+      datasources:
+        datasources.yaml:
+          apiVersion: 1
+          datasources:
+          - name: Prometheus
+            uid: prometheus
+            type: prometheus
+            url: http://prometheus-server
+            access: proxy
+            isDefault: true
+      dashboardProviders:
+        dashboardproviders.yaml:
+          apiVersion: 1
+          providers:
+          - name: finops
+            orgId: 1
+            folder: FinOps
+            type: file
+            disableDeletion: false
+            editable: true
+            options:
+              path: /var/lib/grafana/dashboards/finops
+      # Same FinOps overview dashboard as the standalone finops-multimodel-ollama
+      # blueprint (mirrors grafana/dashboards/finops-overview.json there).
+      dashboards:
+        finops:
+          finops-overview:
+            json: |
+                {
+                  "title": "FinOps — Multi-Model Gateway",
+                  "uid": "finops-overview",
+                  "schemaVersion": 39,
+                  "editable": true,
+                  "time": {
+                    "from": "now-30d",
+                    "to": "now"
+                  },
+                  "refresh": "10s",
+                  "templating": {
+                    "list": []
+                  },
+                  "panels": [
+                    {
+                      "type": "row",
+                      "title": "Summary (live + 30-day history)",
+                      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}
+                    },
+                    {
+                      "type": "stat",
+                      "title": "Total token spend (30d)",
+                      "datasource": {"type": "prometheus", "uid": "prometheus"},
+                      "fieldConfig": {"defaults": {"unit": "currencyUSD"}},
+                      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 1},
+                      "targets": [{"expr": "sum(sum_over_time(finops_daily_spend_usd[30d]) or litellm_total_spend)", "refId": "A"}]
+                    },
+                    {
+                      "type": "stat",
+                      "title": "Total tokens (30d)",
+                      "datasource": {"type": "prometheus", "uid": "prometheus"},
+                      "fieldConfig": {"defaults": {"unit": "short"}},
+                      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 1},
+                      "targets": [{"expr": "sum(sum_over_time(finops_daily_tokens_total[30d]) or litellm_total_tokens)", "refId": "A"}]
+                    },
+                    {
+                      "type": "stat",
+                      "title": "Blended cost / 1k tokens",
+                      "datasource": {"type": "prometheus", "uid": "prometheus"},
+                      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4}},
+                      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 1},
+                      "targets": [{"expr": "sum(sum_over_time(finops_daily_spend_usd[30d]) or litellm_total_spend) / (sum(sum_over_time(finops_daily_tokens_total[30d]) or litellm_total_tokens) / 1000)", "refId": "A"}]
+                    },
+                    {
+                      "type": "stat",
+                      "title": "Requests (live)",
+                      "datasource": {"type": "prometheus", "uid": "prometheus"},
+                      "fieldConfig": {"defaults": {"unit": "short"}},
+                      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 1},
+                      "targets": [{"expr": "sum(litellm_requests_total)", "refId": "A"}]
+                    },
+                    {
+                      "type": "row",
+                      "title": "Spend trend (30-day backfilled history)",
+                      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 6}
+                    },
+                    {
+                      "type": "timeseries",
+                      "title": "Spend by model (daily)",
+                      "datasource": {"type": "prometheus", "uid": "prometheus"},
+                      "fieldConfig": {"defaults": {"unit": "currencyUSD", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}},
+                      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 7},
+                      "targets": [{"expr": "sum by (model) (last_over_time(finops_daily_spend_usd[1d]))", "legendFormat": "{{model}}", "refId": "A"}]
+                    },
+                    {
+                      "type": "timeseries",
+                      "title": "Spend by team (daily)",
+                      "datasource": {"type": "prometheus", "uid": "prometheus"},
+                      "fieldConfig": {"defaults": {"unit": "currencyUSD", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}},
+                      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 7},
+                      "targets": [{"expr": "sum by (team_alias) (last_over_time(finops_daily_spend_usd[1d]))", "legendFormat": "{{team_alias}}", "refId": "A"}]
+                    },
+                    {
+                      "type": "row",
+                      "title": "Chargeback & budgets",
+                      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 15}
+                    },
+                    {
+                      "type": "bargauge",
+                      "title": "Budget utilization by team (spend / monthly budget)",
+                      "datasource": {"type": "prometheus", "uid": "prometheus"},
+                      "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "orange", "value": 75}, {"color": "red", "value": 90}]}}},
+                      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+                      "targets": [{"expr": "100 * sum by (team_alias) (sum_over_time(finops_daily_spend_usd[30d]) or litellm_team_spend) / max by (team_alias) (max_over_time(finops_team_budget_usd[30d]))", "legendFormat": "{{team_alias}}", "refId": "A"}]
+                    },
+                    {
+                      "type": "timeseries",
+                      "title": "Tokens by model (daily)",
+                      "datasource": {"type": "prometheus", "uid": "prometheus"},
+                      "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}},
+                      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+                      "targets": [{"expr": "sum by (model) (last_over_time(finops_daily_tokens_total[1d]))", "legendFormat": "{{model}}", "refId": "A"}]
+                    },
+                    {
+                      "type": "row",
+                      "title": "Live gateway (real-time LiteLLM — last 3h)",
+                      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 24}
+                    },
+                    {
+                      "type": "timeseries",
+                      "title": "Live spend by model",
+                      "datasource": {"type": "prometheus", "uid": "prometheus"},
+                      "fieldConfig": {"defaults": {"unit": "currencyUSD", "custom": {}}},
+                      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 25},
+                      "targets": [{"expr": "sum by (model) (litellm_total_spend)", "legendFormat": "{{model}}", "refId": "A"}],
+                      "timeFrom": "3h"
+                    },
+                    {
+                      "type": "timeseries",
+                      "title": "Live spend by team",
+                      "datasource": {"type": "prometheus", "uid": "prometheus"},
+                      "fieldConfig": {"defaults": {"unit": "currencyUSD", "custom": {}}},
+                      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 25},
+                      "targets": [{"expr": "sum by (team_alias) (litellm_team_spend)", "legendFormat": "{{team_alias}}", "refId": "A"}],
+                      "timeFrom": "3h"
+                    },
+                    {
+                      "type": "row",
+                      "title": "Infrastructure cost (OpenCost)",
+                      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 33}
+                    },
+                    {
+                      "type": "stat",
+                      "title": "Cluster cost ($/hr)",
+                      "datasource": {"type": "prometheus", "uid": "prometheus"},
+                      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 3}},
+                      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 34},
+                      "targets": [{"expr": "sum(node_total_hourly_cost)", "refId": "A"}]
+                    },
+                    {
+                      "type": "stat",
+                      "title": "Projected monthly infra $",
+                      "datasource": {"type": "prometheus", "uid": "prometheus"},
+                      "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 2}},
+                      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 34},
+                      "targets": [{"expr": "sum(node_total_hourly_cost) * 730", "refId": "A"}]
+                    },
+                    {
+                      "type": "timeseries",
+                      "title": "Node cost breakdown ($/hr)",
+                      "datasource": {"type": "prometheus", "uid": "prometheus"},
+                      "fieldConfig": {"defaults": {"unit": "currencyUSD", "custom": {}}},
+                      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 34},
+                      "targets": [
+                        {"expr": "sum(node_cpu_hourly_cost)", "legendFormat": "CPU", "refId": "A"},
+                        {"expr": "sum(node_ram_hourly_cost)", "legendFormat": "RAM", "refId": "B"}
+                      ]
+                    }
+                  ]
+                }
+  # ----------------------------------------------------------------------- #
+  # FinOps — OpenCost: infra cost allocation → Prometheus, queried back from the
+  # in-namespace Prometheus (bare service DNS — namespace-agnostic). Reachable at
+  # http://opencost:9003.
+  # ----------------------------------------------------------------------- #
+  - chartName: opencost
+    chartRepo: application-collection
+    chartVersion: 2.5.27
+    values:
+      global:
+        imagePullSecrets: [application-collection]
+      opencost:
+        prometheus:
+          internal:
+            enabled: false
+          external:
+            enabled: true
+            url: http://prometheus-server:80
+        ui:
+          enabled: true
+  # ----------------------------------------------------------------------- #
+  # Governance — PostgreSQL (upstream Bitnami chart, Apache-2.0): OpenMetadata's
+  # backend DB AND the sample data sources the governance DAGs seed. Needs pgcrypto,
+  # which the AppCo Postgres image doesn't ship. Service: gov-db:5432.
+  # ----------------------------------------------------------------------- #
+  - chartName: postgresql
+    chartRepo: bitnami
+    chartVersion: 18.8.0
+    values:
+      global:
+        security:
+          allowInsecureImages: true
+      image:
+        registry: docker.io
+        repository: bitnamilegacy/postgresql
+        tag: 16.4.0-debian-12-r9
+      fullnameOverride: gov-db
+      auth:
+        database: openmetadata_db
+        username: openmetadata_user
+        password: Governance-Demo-1
+        postgresPassword: GovAdmin-Demo-1
+      primary:
+        persistence:
+          enabled: true
+          size: 8Gi
+  # ----------------------------------------------------------------------- #
+  # Governance — OpenSearch (Application Collection, Apache-2.0): OpenMetadata's
+  # search engine. Single-node, security plugin disabled (demo). Service: opensearch:9200.
+  # ----------------------------------------------------------------------- #
+  - chartName: opensearch
+    chartRepo: application-collection
+    chartVersion: 3.7.0
+    values:
+      imagePullSecrets:
+        - name: application-collection
+      clusterName: opensearch
+      masterService: opensearch
+      singleNode: true
+      replicas: 1
+      opensearchJavaOpts: "-Xms1g -Xmx1g"
+      sysctlInit:
+        enabled: true
+      securityConfig:
+        enabled: false
+      extraEnvs:
+        - {name: DISABLE_SECURITY_PLUGIN, value: "true"}
+        - {name: DISABLE_INSTALL_DEMO_CONFIG, value: "true"}
+      persistence:
+        enabled: true
+        size: 20Gi
+      resources:
+        requests: {cpu: "500m", memory: "1536Mi"}
+        limits: {memory: "2Gi"}
+  # ----------------------------------------------------------------------- #
+  # Governance — OpenMetadata (UPSTREAM, Apache-2.0): the governance server + UI
+  # (:8585). backend = gov-db above; search = opensearch above; no bundled ingestion
+  # Airflow — the shared AppCo Airflow drives it via REST. Default admin login:
+  # admin@open-metadata.org / admin (demo).
+  # ----------------------------------------------------------------------- #
+  - chartName: openmetadata
+    chartRepo: openmetadata
+    chartVersion: 1.13.1
+    values:
+      openmetadata:
+        config:
+          database:
+            host: gov-db
+            port: 5432
+            driverClass: org.postgresql.Driver
+            dbScheme: postgresql
+            databaseName: openmetadata_db
+            auth:
+              username: openmetadata_user
+              password:
+                secretRef: gov-db
+                secretKey: password
+            dbParams: ""
+          elasticsearch:
+            enabled: true
+            host: opensearch
+            searchType: opensearch
+            port: 9200
+            scheme: http
+            auth:
+              enabled: false
+          pipelineServiceClientConfig:
+            enabled: false
+            airflow:
+              auth:
+                password:
+                  secretRef: gov-db
+                  secretKey: password
+          authorizer:
+            initialAdmins:
+            - "admin"
+            principalDomain: "open-metadata.org"
+          authentication:
+            provider: "basic"
+            enableSelfSignup: true
+          fernetkey:
+            value: "cD5uS1yq0uJqM4t8oQ2r9v3wZ7xY6bN0aE1hK2mP4s="
+          jwtTokenConfiguration:
+            enabled: true
+  # ----------------------------------------------------------------------- #
+  # SHARED — Apache Airflow: one instance orchestrating all three domains' DAGs
+  # (git-synced from this blueprint's dags/{dora,finops,governance}/, scanned
+  # recursively). Env is the UNION of what each domain's DAGs need — no name
+  # collisions between the three sets.
+  # ----------------------------------------------------------------------- #
+  - chartName: apache-airflow
+    chartRepo: application-collection
+    chartVersion: 1.22.0
+    values:
+      executor: LocalExecutor
+      # Pin generated secret keys so the pod template is STABLE across Fleet
+      # re-reconciles (left unset, the chart regenerates them each render and the
+      # deployment never converges). Demo-fixed values.
+      fernetKey: "Nv3aCd-3agJbJG1QxzKMezX5pJZB4fRpZIrqhdS-MA4="
+      jwtSecret: "72873f21d1682ddc023f0815344d1cdc0157e59c9c5480bcb430686d6ed466d3"
+      webserverSecretKey: "bb3ea2e3f0a3ad96a2f440ab3ca4e3406985aaf72182662ebd339f53a7a28a7a"
+      redis:
+        enabled: false
+      flower:
+        enabled: false
+      images:
+        airflow:
+          repository: containers/apache-airflow
+          tag: 3.2.2-8.14
+          pullPolicy: IfNotPresent
+          registry: dp.apps.rancher.io
+      dags:
+        gitSync:
+          enabled: true
+          repo: https://github.com/alessandro-festa/aif-community-demos.git
+          branch: main
+          ref: main
+          rev: HEAD
+          depth: 1
+          subPath: blueprints/demo-combined-dora/dags
+          period: 30s
+      env:
+      # --- DORA ---
+      - name: POSTGRES_URI
+        value: postgresql://dora:dora@dora-db:5432/dora
+      - name: QDRANT_URL
+        value: http://qdrant:6333
+      - name: N_INCIDENTS
+        value: "600"
+      # --- FinOps ---
+      - name: LITELLM_BASE_URL
+        value: http://litellm:4000
+      - name: LITELLM_MASTER_KEY
+        value: sk-guardrails-demo
+      - name: PROM_REMOTE_WRITE_URL
+        value: http://prometheus-server:80/api/v1/write
+      - name: TRAFFIC_REQUESTS
+        value: "40"
+      - name: BACKFILL_DAYS
+        value: "14"
+      # --- Governance ---
+      - name: OM_BASE_URL
+        value: http://openmetadata:8585
+      - name: OM_USER
+        value: admin@open-metadata.org
+      - name: OM_PASSWORD
+        value: admin
+      - name: PGHOST
+        value: gov-db
+      - name: PGPORT
+        value: "5432"
+      - name: PG_ADMIN_USER
+        value: postgres
+      - name: PG_ADMIN_PASSWORD
+        value: GovAdmin-Demo-1
+      ingress:
+        apiServer:
+          enabled: true
+          ingressClassName: nginx
+          annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          hosts:
+          - name: demo-combined-airflow
+            tls:
+              enabled: true

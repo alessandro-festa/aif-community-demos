@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Data Governance Copilot — SUSE</title>
+<style>
+  :root {
+    --bg:#0a1e1a; --surface:#122b25; --border:#1e3d35; --text:#e8ede9;
+    --muted:#7f9990; --accent:#fe7c3f; --mint:#90ebcd; --ok:#30ba78; --bad:#dc3545;
+    --radius:10px;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    background:var(--bg); color:var(--text); }
+  header { padding:18px 24px; border-bottom:1px solid var(--border);
+    display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:1.15rem; margin:0; font-weight:700; }
+  header .dot { width:9px; height:9px; border-radius:50%; background:var(--bad); }
+  header .dot.ok { background:var(--ok); }
+  header .muted { color:var(--muted); font-size:.85rem; }
+  main { max-width:1000px; margin:0 auto; padding:22px; display:grid; gap:18px;
+    grid-template-columns:1fr 1fr; }
+  .card { background:var(--surface); border:1px solid var(--border);
+    border-radius:var(--radius); padding:16px; }
+  .card.wide { grid-column:1 / -1; }
+  .card h2 { margin:0 0 10px; font-size:.98rem; color:var(--mint); }
+  input, textarea { width:100%; background:var(--bg); color:var(--text);
+    border:2px solid var(--border); border-radius:8px; padding:9px 11px; font-size:.9rem; }
+  input:focus, textarea:focus { outline:none; border-color:var(--accent); }
+  button { margin-top:10px; background:var(--accent); color:#08110e; border:none;
+    border-radius:8px; padding:9px 16px; font-weight:700; cursor:pointer; }
+  button:hover { background:var(--mint); }
+  .out { margin-top:12px; white-space:pre-wrap; font-size:.88rem; line-height:1.55;
+    color:var(--text); }
+  .muted { color:var(--muted); font-size:.82rem; }
+  .pill { display:inline-block; font-size:.72rem; padding:1px 7px; border-radius:20px;
+    border:1px solid var(--border); color:var(--mint); margin:2px 4px 0 0; }
+  .match { border-top:1px solid var(--border); padding:8px 0; font-size:.85rem; }
+  .status.ok { color:var(--ok); } .status.failed { color:var(--bad); }
+  .spinner { display:inline-block; width:12px; height:12px; border:2px solid var(--muted);
+    border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite;
+    vertical-align:middle; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>Data Governance Copilot</h1>
+  <span class="muted" id="sub">OpenMetadata + <span id="model">…</span></span>
+</header>
+<main>
+  <section class="card">
+    <h2>Discover</h2>
+    <div class="muted">Ask about the catalog in natural language.</div>
+    <input id="q" placeholder="which datasets hold PII owned by finance?" />
+    <button data-run="discover">Search</button>
+    <div class="out" id="discover-out"></div>
+    <div id="discover-matches"></div>
+  </section>
+
+  <section class="card">
+    <h2>Draft glossary term</h2>
+    <div class="muted">Draft a business-glossary definition.</div>
+    <input id="term" placeholder="e.g. Reference-Currency" />
+    <button data-run="glossary">Draft</button>
+    <div class="out" id="glossary-out"></div>
+  </section>
+
+  <section class="card">
+    <h2>Lineage &amp; impact</h2>
+    <div class="muted">Explain the impact of a change to an asset (use its FQN).</div>
+    <input id="fqn" placeholder="enterprise-postgres.enterprise_dwh.core.customer" />
+    <button data-run="lineage">Explain impact</button>
+    <div class="out" id="lineage-out"></div>
+  </section>
+
+  <section class="card">
+    <h2>Data quality</h2>
+    <div class="muted">Summarise the current data-quality status.</div>
+    <button data-run="quality">Summarise</button>
+    <div class="out" id="quality-out"></div>
+  </section>
+</main>
+
+<script>
+async function jpost(url, body) {
+  const r = await fetch(url, { method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(body) });
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
+  return r.json();
+}
+async function jget(url) {
+  const r = await fetch(url); if (!r.ok) throw new Error(r.statusText); return r.json();
+}
+function busy(id, on) { document.getElementById(id).innerHTML = on ? '<span class="spinner"></span>' : ''; }
+
+const runners = {
+  async discover() {
+    const q = document.getElementById("q").value.trim(); if (!q) return;
+    busy("discover-out", true); document.getElementById("discover-matches").innerHTML = "";
+    try {
+      const d = await jpost("/api/discover", { query:q });
+      document.getElementById("discover-out").textContent = d.answer;
+      document.getElementById("discover-matches").innerHTML = (d.matches||[]).map(m =>
+        `<div class="match"><strong>${m.name||""}</strong><br>
+         <span class="muted">${m.description||""}</span><br>
+         ${(m.tags||[]).map(t=>`<span class="pill">${t}</span>`).join("")}</div>`).join("");
+    } catch(e){ document.getElementById("discover-out").textContent = "⚠ "+e.message; }
+  },
+  async glossary() {
+    const term = document.getElementById("term").value.trim(); if (!term) return;
+    busy("glossary-out", true);
+    try { const d = await jpost("/api/glossary-draft", { term });
+      document.getElementById("glossary-out").textContent = d.definition;
+    } catch(e){ document.getElementById("glossary-out").textContent = "⚠ "+e.message; }
+  },
+  async lineage() {
+    const fqn = document.getElementById("fqn").value.trim(); if (!fqn) return;
+    busy("lineage-out", true);
+    try { const d = await jpost("/api/lineage", { fqn });
+      document.getElementById("lineage-out").textContent =
+        d.impact + "\n\nConnected: " + (d.connected||[]).join(", ");
+    } catch(e){ document.getElementById("lineage-out").textContent = "⚠ "+e.message; }
+  },
+  async quality() {
+    busy("quality-out", true);
+    try { const d = await jget("/api/quality");
+      const lines = (d.cases||[]).map(c =>
+        `${c.status==="Success"||c.status==="success"?"✓":"✗"} ${c.name} `+
+        `[${c.status}]`).join("\n");
+      document.getElementById("quality-out").textContent = d.summary + (lines? "\n\n"+lines : "");
+    } catch(e){ document.getElementById("quality-out").textContent = "⚠ "+e.message; }
+  },
+};
+document.querySelectorAll("[data-run]").forEach(b =>
+  b.addEventListener("click", () => runners[b.dataset.run]()));
+
+(async () => {
+  try { const h = await jget("/api/health");
+    document.getElementById("dot").classList.toggle("ok", !!h.openmetadata);
+    document.getElementById("model").textContent = h.model || "LLM";
+  } catch { /* offline */ }
+})();
+</script>
+</body>
+</html>

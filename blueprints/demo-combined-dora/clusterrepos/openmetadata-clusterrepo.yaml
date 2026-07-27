@@ -1,0 +1,10 @@
+# Registers the upstream OpenMetadata Helm repo as a ClusterRepo named "openmetadata",
+# so the Blueprint CR components with `chartRepo: openmetadata` resolve. OpenMetadata is
+# Apache-2.0. Apply BEFORE importing the blueprint:
+#   kubectl apply -f openmetadata-clusterrepo.yaml
+apiVersion: catalog.cattle.io/v1
+kind: ClusterRepo
+metadata:
+  name: openmetadata
+spec:
+  url: https://helm.open-metadata.org

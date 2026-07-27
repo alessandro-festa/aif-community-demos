@@ -1,0 +1,9 @@
+# Registers the upstream Bitnami OCI Helm repo as a ClusterRepo named "bitnami", so the
+# Blueprint's postgresql component (chartRepo: bitnami) resolves. Bitnami charts are
+# Apache-2.0. bpm applies this automatically at import (clusterResources).
+apiVersion: catalog.cattle.io/v1
+kind: ClusterRepo
+metadata:
+  name: bitnami
+spec:
+  url: oci://registry-1.docker.io/bitnamicharts

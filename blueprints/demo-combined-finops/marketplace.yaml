@@ -1,0 +1,99 @@
+id: demo-combined-finops
+displayName: "Demo Combined: FinOps Multi-Model Gateway (Ollama, CPU)"
+description: >-
+  Part 2 of 3 of the combined demo stack — frontend + guide only. Deploy the shared stack
+  first with "Demo Combined: DORA Compliance" (it creates ONE AIWorkload with Ollama,
+  Airflow, LiteLLM, Prometheus, Grafana and OpenCost shared across all three demos), then
+  come back here, enter that SAME namespace below, and run the FinOps pipeline + chat UI. A
+  LiteLLM proxy serves three logically-priced models (all backed by the one shared fast
+  Ollama model for demo speed) with guardrails; two cost planes are reconciled in Grafana —
+  TOKEN spend (LiteLLM spend logs) and INFRASTRUCTURE cost (OpenCost). Airflow creates
+  per-team virtual keys + budgets and backfills synthetic history. Chat runs in a custom
+  local UI wired to LiteLLM.
+category: finops
+tags: [demo-combined, finops, opencost, litellm, prometheus, grafana, airflow, chargeback, multi-model, cost]
+prerequisites:
+  - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
+  - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
+  - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
+# The custom chat UI the marketplace runs locally (replaces Open WebUI). Talks to the
+# LiteLLM gateway over a port-forward; env localhost:4000 is auto-remapped to the
+# random local port the marketplace assigns the forward.
+localFrontend:
+  dir: ui
+  runtime: python
+  install:
+    - "-r ui/requirements.txt"
+  entry: app.main:app
+  port: 8000
+  openPath: /
+  env:
+    LITELLM_BASE_URL: "http://localhost:4000"
+    LITELLM_MASTER_KEY: "sk-guardrails-demo"
+    # Single warm model for the chat UI (memory-constrained CPU box). This LiteLLM
+    # model_name is backed by the one shared fast Ollama model in the combined stack.
+    CHAT_MODEL: "llama-3.2-1b"
+  portForwards:
+    - {name: litellm, service: litellm, local: 4000, remote: 4000}
+# In-cluster component UIs the marketplace can port-forward on demand (button enabled
+# once the service is Ready).
+componentUIs:
+  - {name: grafana,  label: "Grafana (FinOps dashboards)", service: grafana, port: 80, path: /d/finops-overview}
+  - {name: airflow,  label: "Airflow UI",                  service: apache-airflow-api-server, port: 8080, path: /}
+  - {name: opencost, label: "OpenCost UI",                 service: opencost, port: 9090, path: /}
+# The DAGs bpm triggers sequentially from the guide (trigger-dags action): it opens
+# a temporary port-forward to the Airflow API server and runs each in order. This
+# pipeline only SETS UP + BACKFILLS history (both light) so the dashboards populate
+# instantly. generate_traffic is intentionally NOT here — it drives real inference
+# and is heavy on CPU; run it manually from the Airflow UI when you want live spend.
+airflowPipeline:
+  dags:
+    - {id: finops_setup,     label: "Set up teams & budgets"}
+    - {id: backfill_history, label: "Backfill ~14d of history"}
+guide:
+  - title: Point at the shared namespace
+    body: |
+      This blueprint has no CR of its own — it's a frontend + guide for the shared stack
+      deployed by **Demo Combined: DORA Compliance**. If you haven't already, import that
+      blueprint and create its AIWorkload first. Enter the SAME namespace you used there.
+    action: {type: namespace-input}
+  - title: Set up teams, then simulate consumption (Airflow)
+    body: |
+      Click **Run pipeline (Airflow)** below to set up teams and backfill history
+      automatically (each step waits for the previous to finish):
+
+      1. `finops_setup` — creates a virtual key + monthly budget per team
+         (engineering, data-science, marketing, support) in LiteLLM.
+      2. `backfill_history` — writes ~14 days of synthetic spend + per-team budgets
+         into Prometheus (remote-write) so the dashboards have instant history.
+
+      **Optional — live traffic (manual):** to add real, live token consumption, open
+      the **Airflow UI** button (log in with **admin / admin**) and run
+      `generate_traffic`. It drives real inference and is heavier on CPU, so it's kept
+      out of the one-click pipeline. Raise `TRAFFIC_REQUESTS` / `BACKFILL_DAYS` on the
+      shared blueprint for more volume/history.
+    action: {type: trigger-dags}
+  - title: Explore the FinOps dashboards (Grafana)
+    body: |
+      Use the **Grafana (FinOps dashboards)** button below (login **admin / admin**) to
+      open the **FinOps — Multi-Model Gateway** dashboard. You'll see:
+
+      - **Token spend (live)** — total spend, blended cost per 1k tokens, spend by model
+        and by team (from the LiteLLM exporter).
+      - **Chargeback & budgets** — per-team budget utilization, tokens by model.
+      - **Historical spend (backfilled)** — daily spend by team / model.
+      - **Infrastructure cost (OpenCost)** — cluster $/hr, projected monthly, CPU vs RAM.
+
+      For a detailed per-workload infra breakdown, open the **OpenCost UI** button.
+  - title: Launch the chat UI
+    body: |
+      Starts `kubectl port-forward` to LiteLLM (4000) and runs the SUSE FinOps chat UI
+      locally. Chat as a team, pick a model, and watch each reply's cost + tokens.
+    action: {type: start-frontend}
+  - title: Chat and watch spend accrue
+    body: |
+      Open the chat UI: pick a **model** and a **team**, and send messages — each reply
+      shows its **cost** and **token usage**, and the session total updates. Every message
+      is real consumption that lands in LiteLLM's spend logs and shows up in Grafana
+      (re-open the dashboard to see the live panels move).
+    action: {type: open-url, url: "http://localhost:8000"}
