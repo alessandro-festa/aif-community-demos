@@ -4,17 +4,18 @@ Chest X-ray Copilot — minimal FastAPI UI.
 Upload (or pick a sample) chest X-ray, get an analysis from a medical
 vision-language model over the OpenAI-compatible API (MedGemma / LLaVA-Med served
 by vLLM or Ollama), then embed the image with BiomedCLIP (CPU, in-process) and
-store it in Milvus so you can do:
+store it in Qdrant so you can do:
   * similarity search  — image -> nearest stored X-rays,
   * semantic search    — text query -> nearest stored X-rays (shared CLIP space).
 
-Everything except the LLM + Milvus runs locally in this process on CPU.
+Everything except the LLM + Qdrant runs locally in this process on CPU.
 
 Configuration (env):
   OPENAI_BASE_URL  default http://localhost:8000/v1   (vLLM router / Ollama)
   OPENAI_API_KEY   default EMPTY
   DEFAULT_MODEL    default ""  (else first model the endpoint advertises)
-  MILVUS_URI       default http://localhost:19530
+  QDRANT_URL       default http://localhost:6333
+  QDRANT_API_KEY   default ""  (only sent as the `api-key` header if non-empty)
   CLIP_MODEL       default hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224
   IMG_COLLECTION   default xray_embeddings
 
@@ -39,7 +40,8 @@ from PIL import Image
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:8000/v1").rstrip("/")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "EMPTY")
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "")
-MILVUS_URI = os.environ.get("MILVUS_URI", "http://localhost:19530")
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333").rstrip("/")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 CLIP_MODEL = os.environ.get(
     "CLIP_MODEL", "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224")
 COLLECTION = os.environ.get("IMG_COLLECTION", "xray_embeddings")
@@ -108,75 +110,100 @@ def clip_text_embed(text: str) -> Optional[list[float]]:
         return None
 
 
-# ------------------------------------------------------------------------ Milvus
-_milvus_ready = False
+# ------------------------------------------------------------------------ Qdrant
+_qdrant_ready = False
 
 
-def _milvus():
-    """Connect to Milvus and ensure the X-ray collection exists. Returns the
-    collection, or None if Milvus is unreachable (indexing is best-effort)."""
-    global _milvus_ready
+def _qdrant_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if QDRANT_API_KEY:
+        headers["api-key"] = QDRANT_API_KEY
+    return headers
+
+
+def _qdrant_ensure_collection() -> bool:
+    """Make sure the X-ray collection exists in Qdrant. Returns True if Qdrant is
+    reachable and the collection is ready, False otherwise (indexing/search is
+    best-effort)."""
+    global _qdrant_ready
+    if _qdrant_ready:
+        return True
     try:
-        from pymilvus import (Collection, CollectionSchema, DataType, FieldSchema,
-                              connections, utility)
-        if not _milvus_ready:
-            host = MILVUS_URI.replace("http://", "").replace("https://", "")
-            h, _, p = host.partition(":")
-            connections.connect(alias="default", host=h, port=p or "19530")
-            if not utility.has_collection(COLLECTION):
-                fields = [
-                    FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=64),
-                    FieldSchema(name="filename", dtype=DataType.VARCHAR, max_length=512),
-                    FieldSchema(name="model", dtype=DataType.VARCHAR, max_length=128),
-                    FieldSchema(name="analysis", dtype=DataType.VARCHAR, max_length=8192),
-                    FieldSchema(name="thumb", dtype=DataType.VARCHAR, max_length=65535),
-                    FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=CLIP_DIM),
-                ]
-                col = Collection(COLLECTION, CollectionSchema(fields, description="Chest X-ray BiomedCLIP index"))
-                col.create_index("vector", {"index_type": "AUTOINDEX", "metric_type": "COSINE"})
-            _milvus_ready = True
-        col = Collection(COLLECTION)
-        col.load()
-        return col
+        r = requests.get(f"{QDRANT_URL}/collections/{COLLECTION}",
+                         headers=_qdrant_headers(), timeout=10)
+        if r.status_code == 404:
+            r = requests.put(
+                f"{QDRANT_URL}/collections/{COLLECTION}",
+                headers=_qdrant_headers(),
+                json={"vectors": {"size": CLIP_DIM, "distance": "Cosine"}},
+                timeout=30,
+            )
+            r.raise_for_status()
+        else:
+            r.raise_for_status()
+        _qdrant_ready = True
+        return True
     except Exception as e:  # noqa: BLE001
-        print(f"[milvus] unavailable: {e}", flush=True)
-        return None
+        print(f"[qdrant] unavailable: {e}", flush=True)
+        return False
+
+
+def _qdrant_status() -> tuple[bool, Optional[int]]:
+    """Return (available, indexed_point_count)."""
+    if not _qdrant_ensure_collection():
+        return False, None
+    try:
+        r = requests.get(f"{QDRANT_URL}/collections/{COLLECTION}",
+                         headers=_qdrant_headers(), timeout=10)
+        r.raise_for_status()
+        return True, r.json().get("result", {}).get("points_count")
+    except Exception as e:  # noqa: BLE001
+        print(f"[qdrant] status failed: {e}", flush=True)
+        return False, None
 
 
 def _store(filename: str, model: str, analysis: str, jpeg: bytes, vec: list[float]) -> bool:
-    col = _milvus()
-    if col is None or vec is None:
+    if vec is None or not _qdrant_ensure_collection():
         return False
     try:
-        col.insert([{
-            "id": uuid.uuid4().hex[:16],
-            "filename": filename[:512],
-            "model": model[:128],
-            "analysis": (analysis or "")[:8192],
-            "thumb": _thumb_b64(jpeg),
+        point = {
+            "id": str(uuid.uuid4()),
             "vector": vec,
-        }])
-        col.flush()
+            "payload": {
+                "filename": filename[:512],
+                "model": model[:128],
+                "analysis": (analysis or "")[:8192],
+                "thumb": _thumb_b64(jpeg),
+            },
+        }
+        r = requests.put(
+            f"{QDRANT_URL}/collections/{COLLECTION}/points",
+            headers=_qdrant_headers(), json={"points": [point]}, timeout=30,
+        )
+        r.raise_for_status()
         return True
     except Exception as e:  # noqa: BLE001
-        print(f"[milvus] insert failed: {e}", flush=True)
+        print(f"[qdrant] insert failed: {e}", flush=True)
         return False
 
 
-def _hits(col, vec: list[float], top_k: int) -> list[dict]:
-    res = col.search(
-        data=[vec], anns_field="vector", param={"metric_type": "COSINE"},
-        limit=max(1, min(int(top_k), 24)),
-        output_fields=["filename", "model", "analysis", "thumb"],
+def _hits(vec: list[float], top_k: int) -> list[dict]:
+    r = requests.post(
+        f"{QDRANT_URL}/collections/{COLLECTION}/points/search",
+        headers=_qdrant_headers(),
+        json={"vector": vec, "limit": max(1, min(int(top_k), 24)), "with_payload": True},
+        timeout=30,
     )
+    r.raise_for_status()
     out = []
-    for hit in res[0]:
+    for hit in r.json().get("result", []):
+        payload = hit.get("payload") or {}
         out.append({
-            "score": round(float(hit.distance), 4),
-            "filename": hit.entity.get("filename"),
-            "model": hit.entity.get("model"),
-            "analysis": hit.entity.get("analysis"),
-            "thumb": hit.entity.get("thumb"),
+            "score": round(float(hit.get("score", 0.0)), 4),
+            "filename": payload.get("filename"),
+            "model": payload.get("model"),
+            "analysis": payload.get("analysis"),
+            "thumb": payload.get("thumb"),
         })
     return out
 
@@ -262,19 +289,13 @@ def analyse(jpeg: bytes, model: str, question: str) -> str:
 # -------------------------------------------------------------------------- routes
 @app.get("/api/health")
 def health():
-    col = _milvus()
-    count = None
-    if col is not None:
-        try:
-            count = col.num_entities
-        except Exception:  # noqa: BLE001
-            count = None
+    available, count = _qdrant_status()
     return {
         "ok": True,
         "endpoint": OPENAI_BASE_URL,
         "models": list_models(),
         "clip_model": CLIP_MODEL,
-        "milvus": col is not None,
+        "qdrant": available,
         "collection": COLLECTION,
         "indexed": count,
     }
@@ -323,24 +344,22 @@ async def search_similar(
     file: Optional[UploadFile] = File(None),
 ):
     jpeg, name = await _read_image(file, sample)
-    col = _milvus()
-    if col is None:
-        raise HTTPException(status_code=503, detail="Milvus is not available")
+    if not _qdrant_ensure_collection():
+        raise HTTPException(status_code=503, detail="Qdrant is not available")
     vec = clip_image_embed(jpeg)
     if vec is None:
         raise HTTPException(status_code=503, detail="BiomedCLIP unavailable")
-    return {"query": name, "hits": _hits(col, vec, top_k)}
+    return {"query": name, "hits": _hits(vec, top_k)}
 
 
 @app.post("/api/search/semantic")
 def search_semantic(query: str = Form(...), top_k: int = Form(8)):
-    col = _milvus()
-    if col is None:
-        raise HTTPException(status_code=503, detail="Milvus is not available")
+    if not _qdrant_ensure_collection():
+        raise HTTPException(status_code=503, detail="Qdrant is not available")
     vec = clip_text_embed(query)
     if vec is None:
         raise HTTPException(status_code=503, detail="BiomedCLIP unavailable")
-    return {"query": query, "hits": _hits(col, vec, top_k)}
+    return {"query": query, "hits": _hits(vec, top_k)}
 
 
 @app.exception_handler(HTTPException)

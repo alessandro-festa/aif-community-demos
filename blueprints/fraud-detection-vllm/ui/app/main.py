@@ -2,7 +2,7 @@
 Fraud / AML investigator dashboard (SUSE) — backend.
 
 Reads the Airflow-produced tables in PostgreSQL (accounts, transactions, fraud_cases,
-account_scores, flagged_accounts, model_metrics) and the Milvus account-embedding index,
+account_scores, flagged_accounts, model_metrics) and the Qdrant account-embedding index,
 and uses a locally-served LLM (vLLM or Ollama, OpenAI-compatible) as an AML analyst that
 explains flagged cases.
 
@@ -15,7 +15,7 @@ The SAME code drives both variants — only env differs:
 
 Config (env):
   POSTGRES_URI     postgresql://fraud:fraud@localhost:5432/fraud
-  MILVUS_URI       http://localhost:19530
+  QDRANT_URL       http://localhost:6333
   OPENAI_BASE_URL  http://localhost:11434/v1
   LLM_MODEL        qwen2.5:3b
   OPENAI_API_KEY   EMPTY
@@ -36,7 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 POSTGRES_URI = os.environ.get("POSTGRES_URI", "postgresql://fraud:fraud@localhost:5432/fraud")
-MILVUS_URI = os.environ.get("MILVUS_URI", "http://localhost:19530").rstrip("/")
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333").rstrip("/")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1").rstrip("/")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:3b")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "EMPTY")
@@ -132,13 +132,13 @@ def health():
         llm = True
     except Exception:
         pass
-    milvus = False
+    qdrant = False
     try:
-        requests.post(f"{MILVUS_URI}/v2/vectordb/collections/list", json={}, timeout=10).raise_for_status()
-        milvus = True
+        requests.get(f"{QDRANT_URL}/collections", timeout=10).raise_for_status()
+        qdrant = True
     except Exception:
         pass
-    return {"postgres": pg_ok(), "milvus": milvus, "llm": llm,
+    return {"postgres": pg_ok(), "qdrant": qdrant, "llm": llm,
             "model": LLM_MODEL, "ready": table_exists("flagged_accounts")}
 
 

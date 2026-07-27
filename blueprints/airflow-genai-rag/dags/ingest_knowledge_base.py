@@ -4,9 +4,9 @@ DAG: ingest_knowledge_base
 RAG ingestion pipeline (the SUSE/Ollama analogue of the original use case's
 Weaviate ingestion). For each markdown file in include/knowledge_base/:
 
-    read -> chunk -> embed (Ollama nomic-embed-text) -> upsert into Milvus
+    read -> chunk -> embed (Ollama nomic-embed-text) -> upsert into Qdrant
 
-The Milvus `kb` collection is dropped and recreated on every run so ingestion is
+The Qdrant `kb` collection is dropped and recreated on every run so ingestion is
 idempotent. Trigger manually from the Airflow UI.
 """
 from __future__ import annotations
@@ -18,10 +18,10 @@ from common import (
     KB_COLLECTION,
     KB_DIR,
     chunk_text,
-    milvus_create_collection,
-    milvus_drop_collection,
-    milvus_insert,
     ollama_embed,
+    qdrant_create_collection,
+    qdrant_drop_collection,
+    qdrant_insert,
 )
 
 
@@ -55,7 +55,7 @@ def ingest_knowledge_base():
 
     @task
     def embed_and_upsert(records: list[dict]) -> int:
-        """Embed each chunk with Ollama and upsert the vectors into Milvus."""
+        """Embed each chunk with Ollama and upsert the vectors into Qdrant."""
         rows: list[dict] = []
         dim = 0
         for idx, rec in enumerate(records):
@@ -72,9 +72,9 @@ def ingest_knowledge_base():
             )
 
         # Recreate the collection with the right dimensionality, then insert.
-        milvus_drop_collection(KB_COLLECTION)
-        milvus_create_collection(dim, KB_COLLECTION)
-        milvus_insert(rows, KB_COLLECTION)
+        qdrant_drop_collection(KB_COLLECTION)
+        qdrant_create_collection(dim, KB_COLLECTION)
+        qdrant_insert(rows, KB_COLLECTION)
         return len(rows)
 
     embed_and_upsert(read_and_chunk())

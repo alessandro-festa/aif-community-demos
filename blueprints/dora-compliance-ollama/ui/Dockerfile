@@ -18,9 +18,9 @@ USER 10001
 
 EXPOSE 8000
 ENV POSTGRES_URI=postgresql://dora:dora@dora-db:5432/dora \
-    MILVUS_URI=http://milvus:19530 \
+    QDRANT_URL=http://qdrant:6333 \
     OPENAI_BASE_URL=http://ollama:11434/v1 \
-    LLM_MODEL=qwen2.5:1.5b \
+    LLM_MODEL=qwen2.5:0.5b \
     OPENAI_API_KEY=EMPTY \
     EMBED_DIM=256 \
     AIRFLOW_BASE_URL=http://apache-airflow-api-server:8080 \

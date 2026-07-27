@@ -33,7 +33,7 @@ HTTP_TIMEOUT = int(os.environ.get("CHAT_TIMEOUT", "180"))
 # CPU, so we don't offer the 1.5B/3B here (loading them would evict the warm model
 # and can time out). The multi-model cost story lives in the backfilled dashboards,
 # and the generate_traffic DAG still exercises all three models.
-CHAT_MODEL = os.environ.get("CHAT_MODEL", "llama-3.2-1b")
+CHAT_MODEL = os.environ.get("CHAT_MODEL", "qwen-2.5-0.5b")
 # Optional system prompt. EMPTY by default on purpose: an instruction-style system
 # message ("do not explain your reasoning…") trips the detect_prompt_injection
 # guardrail ("Rejected message. This is a prompt injection attack."), which would

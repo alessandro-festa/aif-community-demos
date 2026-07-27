@@ -1,7 +1,7 @@
 """
 DAG: flag_and_anomaly
 
-Push per-account behavioural feature vectors into Milvus (COSINE) for embedding-based
+Push per-account behavioural feature vectors into Qdrant (COSINE) for embedding-based
 anomaly detection, compute an anomaly score (distance to nearest neighbours), and write the
 top flagged accounts (combining the XGBoost score, the anomaly score and ring membership)
 into `flagged_accounts` for the investigator UI.
@@ -12,8 +12,8 @@ import pendulum
 from airflow.decorators import dag, task
 
 from common import (ACCOUNTS_COLLECTION, FEATURE_DIM, FEATURES, acc_num,
-                    milvus_create_collection, milvus_drop_collection, milvus_insert,
-                    milvus_search, pg_exec, pg_insert_rows, pg_query)
+                    qdrant_create_collection, qdrant_drop_collection, qdrant_insert,
+                    qdrant_search, pg_exec, pg_insert_rows, pg_query)
 
 
 @dag(
@@ -26,7 +26,7 @@ from common import (ACCOUNTS_COLLECTION, FEATURE_DIM, FEATURES, acc_num,
 def flag_and_anomaly():
     @task
     def index() -> int:
-        """Normalise feature vectors and (re)load them into Milvus."""
+        """Normalise feature vectors and (re)load them into Qdrant."""
         import numpy as np
 
         rows = pg_query(
@@ -42,11 +42,11 @@ def flag_and_anomaly():
         rng = np.where(X.max(axis=0) - lo == 0, 1.0, X.max(axis=0) - lo)
         Xn = (X - lo) / rng
 
-        milvus_drop_collection(ACCOUNTS_COLLECTION)
-        milvus_create_collection(FEATURE_DIM, ACCOUNTS_COLLECTION)
+        qdrant_drop_collection(ACCOUNTS_COLLECTION)
+        qdrant_create_collection(FEATURE_DIM, ACCOUNTS_COLLECTION)
         data = [{"id": acc_num(a), "vector": Xn[i].tolist(),
                  "account_id": a, "is_fraud": labels[i]} for i, a in enumerate(ids)]
-        milvus_insert(data, ACCOUNTS_COLLECTION)
+        qdrant_insert(data, ACCOUNTS_COLLECTION)
         return len(ids)
 
     @task
@@ -75,7 +75,7 @@ def flag_and_anomaly():
         # (higher = more isolated / unusual).
         scored = []
         for i, a in enumerate(ids):
-            hits = milvus_search(Xn[i].tolist(), 6, ACCOUNTS_COLLECTION)
+            hits = qdrant_search(Xn[i].tolist(), 6, ACCOUNTS_COLLECTION)
             sims = [h.get("distance", 0.0) for h in hits][1:]  # skip self
             anomaly = round(1.0 - (sum(sims) / len(sims) if sims else 1.0), 4)
             combined = 0.7 * xgb[a] + 0.3 * anomaly

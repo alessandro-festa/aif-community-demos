@@ -16,13 +16,13 @@ simulate → classify → mart → alert shape of the pipeline.
 
 What we changed: the reference stack (Apache Kafka + PySpark Structured Streaming + Apache
 Iceberg + MinIO + dbt + Great Expectations + Apache Superset, orchestrated by Airflow with
-DockerOperator) is replaced by **Airflow Python tasks + PostgreSQL + Milvus + a local FastAPI
+DockerOperator) is replaced by **Airflow Python tasks + PostgreSQL + Qdrant + a local FastAPI
 UI**, all sourced from the **SUSE Application Collection**, to fit the Blueprint Marketplace's
 all-SUSE pattern and run without a full lakehouse.
 
 What we added: the reference pipeline has **no LLM**. This blueprint adds an LLM that
 **explains** incidents and a tool-calling **compliance agent** that searches the data (through
-Airflow's Postgres connection + Milvus) and drives the pipeline via the Airflow REST API.
+Airflow's Postgres connection + Qdrant) and drives the pipeline via the Airflow REST API.
 
 The code in this blueprint is our own; the DORA-Pipeline project inspired the design and
 provided the classification rules.

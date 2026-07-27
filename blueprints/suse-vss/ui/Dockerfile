@@ -32,7 +32,7 @@ EXPOSE 8000
 ENV OLLAMA_BASE_URL=http://ollama:11434/v1 \
     VLM_MODEL=moondream:1.8b \
     CLIP_MODEL=clip-ViT-B-32 \
-    MILVUS_URI=http://milvus:19530 \
+    QDRANT_URL=http://qdrant:6333 \
     FRAME_COUNT=0
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

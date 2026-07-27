@@ -18,7 +18,7 @@ USER 10001
 
 EXPOSE 8000
 ENV POSTGRES_URI=postgresql://fraud:fraud@fraud-db:5432/fraud \
-    MILVUS_URI=http://milvus:19530 \
+    QDRANT_URL=http://qdrant:6333 \
     OPENAI_BASE_URL=http://vllm-router-service:80/v1 \
     LLM_MODEL=Qwen/Qwen2.5-3B-Instruct \
     OPENAI_API_KEY=EMPTY

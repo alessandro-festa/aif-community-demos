@@ -3,11 +3,11 @@ displayName: Insurance Support Copilot (vLLM, GPU)
 description: >-
   A customer-support automation demo for an insurance company. Airflow generates a
   synthetic support dataset (customers, families, policies, claims, tickets) into
-  Postgres and a Milvus semantic index; a local chat UI lets a customer upload an
+  Postgres and a Qdrant semantic index; a local chat UI lets a customer upload an
   accident photo, open/close tickets, and see similar past cases — redacted (PII
   removed) with Presidio. Chat + vision via Qwen2.5-VL on vLLM (GPU). Demo only.
 category: customer-support
-tags: [customer-support, insurance, chatbot, airflow, postgres, milvus, presidio, vllm, gpu, vision]
+tags: [customer-support, insurance, chatbot, airflow, postgres, qdrant, presidio, vllm, gpu, vision]
 blueprintFile: insurance-support-vllm-1-0-0.yaml
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
@@ -49,14 +49,14 @@ localFrontend:
     EMBED_BASE_URL: "http://localhost:11434/v1"
     EMBED_MODEL: "nomic-embed-text"
     OPENAI_API_KEY: "EMPTY"
-    MILVUS_URI: "http://localhost:19530"
+    QDRANT_URL: "http://localhost:6333"
     POSTGRES_URI: "postgresql://insurance:insurance@localhost:5433/insurance"
     CASES_COLLECTION: "support_cases"
     CLIP_MODEL: "clip-ViT-B-32"
   portForwards:
     - {name: vllm,       service: vllm-router-service, local: 8011, remote: 80}
     - {name: ollama,     service: ollama,              local: 11434, remote: 11434}
-    - {name: milvus,     service: milvus,              local: 19530, remote: 19530}
+    - {name: qdrant,     service: qdrant,              local: 6333,  remote: 6333}
     - {name: support-db, service: support-db,          local: 5433,  remote: 5432}
 # The DAGs bpm triggers sequentially from the guide (trigger-dags action) — same
 # order as the manual steps below. Each waits for the previous to finish; they can
@@ -79,7 +79,7 @@ guide:
       GPU) → Create AIWorkload**, choose a target **namespace**, and deploy. This needs
       a node with a **real NVIDIA GPU** and the GPU Operator. vLLM downloads
       `Qwen/Qwen2.5-VL-7B-Instruct` on first start (several GB); Ollama pulls
-      `nomic-embed-text`. Wait for Postgres, Milvus, vLLM, Ollama and Airflow to be
+      `nomic-embed-text`. Wait for Postgres, Qdrant, vLLM, Ollama and Airflow to be
       Ready, then enter the namespace below.
     action: {type: namespace-input}
   - title: Run the Airflow pipeline
@@ -88,14 +88,14 @@ guide:
       trigger the DAGs in order:
 
       1. **generate_dataset** — synthesises the insurance data into Postgres.
-      2. **index_cases** — embeds resolved/closed tickets into Milvus (semantic search).
+      2. **index_cases** — embeds resolved/closed tickets into Qdrant (semantic search).
 
       (The vLLM variant applies the support-agent persona as a system prompt, so there
       is no `customize_model` DAG here.)
     action: {type: trigger-dags}
   - title: Launch the demo UI
     body: |
-      Starts `kubectl port-forward` to the vLLM router, Ollama, Milvus, and Postgres,
+      Starts `kubectl port-forward` to the vLLM router, Ollama, Qdrant, and Postgres,
       then runs the Insurance Support Copilot UI locally. If your Helm release name
       isn't `vllm`, adjust the port-forward service name to `<release>-router-service`.
     action: {type: start-frontend}

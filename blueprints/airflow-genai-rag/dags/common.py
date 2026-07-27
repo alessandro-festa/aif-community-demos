@@ -1,18 +1,18 @@
 """
 Shared helpers for the Airflow GenAI RAG DAGs.
 
-Everything here talks to Ollama and Milvus over plain HTTP using `requests`
+Everything here talks to Ollama and Qdrant over plain HTTP using `requests`
 (shipped in the stock Apache Airflow image), so the DAGs need no extra pip
 packages when delivered via git-sync.
 
 Endpoints (in-cluster defaults, overridable via env on the Airflow pods):
   OLLAMA_BASE_URL   http://ollama:11434     Ollama REST API
-  MILVUS_URI        http://milvus:19530     Milvus proxy REST v2 API
+  QDRANT_URL        http://qdrant:6333      Qdrant REST API
   EMBED_MODEL       nomic-embed-text        embedding model
   BASE_MODEL        llama3.2:1b             base chat model to customize from
   CUSTOM_MODEL      astra-custom            name of the created custom model
-  MILVUS_TOKEN      (unset)                 optional "user:password" bearer token
-  KB_COLLECTION     kb                      Milvus collection name
+  QDRANT_API_KEY    (unset)                 optional Qdrant API key
+  KB_COLLECTION     kb                      Qdrant collection name
 """
 from __future__ import annotations
 
@@ -22,11 +22,11 @@ from pathlib import Path
 import requests
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
-MILVUS_URI = os.environ.get("MILVUS_URI", "http://milvus:19530").rstrip("/")
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333").rstrip("/")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 BASE_MODEL = os.environ.get("BASE_MODEL", "llama3.2:1b")
 CUSTOM_MODEL = os.environ.get("CUSTOM_MODEL", "astra-custom")
-MILVUS_TOKEN = os.environ.get("MILVUS_TOKEN", "")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 KB_COLLECTION = os.environ.get("KB_COLLECTION", "kb")
 
 # The knowledge base + example posts ship alongside the DAGs in this repo.
@@ -89,91 +89,71 @@ def ollama_tags() -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Milvus (REST v2 API via the proxy)
+# Qdrant (REST API)
 # --------------------------------------------------------------------------- #
-def _milvus_headers() -> dict:
+def _qdrant_headers() -> dict:
     headers = {"Content-Type": "application/json"}
-    if MILVUS_TOKEN:
-        headers["Authorization"] = f"Bearer {MILVUS_TOKEN}"
+    if QDRANT_API_KEY:
+        headers["api-key"] = QDRANT_API_KEY
     return headers
 
 
-def _milvus_post(path: str, body: dict) -> dict:
-    resp = requests.post(
-        f"{MILVUS_URI}{path}",
-        json=body,
-        headers=_milvus_headers(),
+def qdrant_has_collection(name: str = KB_COLLECTION) -> bool:
+    resp = requests.get(
+        f"{QDRANT_URL}/collections/{name}",
+        headers=_qdrant_headers(),
+        timeout=HTTP_TIMEOUT,
+    )
+    if resp.status_code == 404:
+        return False
+    resp.raise_for_status()
+    return True
+
+
+def qdrant_drop_collection(name: str = KB_COLLECTION) -> None:
+    if qdrant_has_collection(name):
+        resp = requests.delete(
+            f"{QDRANT_URL}/collections/{name}",
+            headers=_qdrant_headers(),
+            timeout=HTTP_TIMEOUT,
+        )
+        resp.raise_for_status()
+
+
+def qdrant_create_collection(dim: int, name: str = KB_COLLECTION) -> None:
+    """Create a KB collection sized for `dim`-length COSINE vectors. Qdrant
+    collections are schemaless for payload fields (text/title/source), so no
+    field-by-field schema is needed beyond the vector itself."""
+    resp = requests.put(
+        f"{QDRANT_URL}/collections/{name}",
+        json={"vectors": {"size": dim, "distance": "Cosine"}},
+        headers=_qdrant_headers(),
         timeout=HTTP_TIMEOUT,
     )
     resp.raise_for_status()
-    data = resp.json()
-    # Milvus REST wraps errors in {"code": <non-zero>, "message": ...}.
-    if isinstance(data, dict) and data.get("code") not in (0, None):
-        raise RuntimeError(f"Milvus error on {path}: {data}")
-    return data
 
 
-def milvus_has_collection(name: str = KB_COLLECTION) -> bool:
-    data = _milvus_post("/v2/vectordb/collections/list", {})
-    return name in (data.get("data") or [])
-
-
-def milvus_drop_collection(name: str = KB_COLLECTION) -> None:
-    if milvus_has_collection(name):
-        _milvus_post("/v2/vectordb/collections/drop", {"collectionName": name})
-
-
-def milvus_create_collection(dim: int, name: str = KB_COLLECTION) -> None:
-    """Create a KB collection with an explicit schema + a COSINE vector index."""
-    body = {
-        "collectionName": name,
-        "schema": {
-            "autoID": False,
-            "enableDynamicField": True,
-            "fields": [
-                {"fieldName": "id", "dataType": "Int64", "isPrimary": True},
-                {
-                    "fieldName": "vector",
-                    "dataType": "FloatVector",
-                    "elementTypeParams": {"dim": dim},
-                },
-                {
-                    "fieldName": "text",
-                    "dataType": "VarChar",
-                    "elementTypeParams": {"max_length": 8192},
-                },
-                {
-                    "fieldName": "title",
-                    "dataType": "VarChar",
-                    "elementTypeParams": {"max_length": 512},
-                },
-                {
-                    "fieldName": "source",
-                    "dataType": "VarChar",
-                    "elementTypeParams": {"max_length": 512},
-                },
-            ],
-        },
-        "indexParams": [
-            {
-                "fieldName": "vector",
-                "metricType": "COSINE",
-                "indexName": "vector_index",
-                "indexType": "AUTOINDEX",
-            }
-        ],
-    }
-    _milvus_post("/v2/vectordb/collections/create", body)
-
-
-def milvus_insert(rows: list[dict], name: str = KB_COLLECTION) -> None:
+def qdrant_insert(rows: list[dict], name: str = KB_COLLECTION) -> None:
     """Insert rows (each: id, vector, text, title, source) in batches."""
     batch = 100
     for i in range(0, len(rows), batch):
-        _milvus_post(
-            "/v2/vectordb/entities/insert",
-            {"collectionName": name, "data": rows[i : i + batch]},
+        points = [
+            {
+                "id": row["id"],
+                "vector": row["vector"],
+                "payload": {
+                    k: v for k, v in row.items() if k not in ("id", "vector")
+                },
+            }
+            for row in rows[i : i + batch]
+        ]
+        resp = requests.put(
+            f"{QDRANT_URL}/collections/{name}/points",
+            json={"points": points},
+            headers=_qdrant_headers(),
+            timeout=HTTP_TIMEOUT,
         )
+        resp.raise_for_status()
 
 
 # --------------------------------------------------------------------------- #

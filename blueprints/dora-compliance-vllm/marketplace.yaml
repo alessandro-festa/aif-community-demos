@@ -3,13 +3,13 @@ displayName: DORA Compliance Analysis (vLLM, GPU)
 description: >-
   EU DORA ICT-incident compliance pipeline. Airflow simulates ICT operational incidents,
   classifies them against the BaFin Article 18 thresholds (CRITICAL/MAJOR/MINOR + reporting
-  deadline), builds compliance marts in PostgreSQL and indexes them in Milvus. An LLM served
+  deadline), builds compliance marts in PostgreSQL and indexes them in Qdrant. An LLM served
   by vLLM on GPU (Qwen/Qwen2.5-3B-Instruct) explains incidents and acts as a compliance agent
   that searches the data via Airflow's Postgres connection and triggers/monitors the pipeline
   via the Airflow REST API. Requires a real GPU node. All from the SUSE Application Collection.
   Classifier faithful to Chirag-Kathuria-009/DORA-Pipeline.
 category: data-engineering
-tags: [dora, compliance, airflow, milvus, agent, vllm, gpu, regtech]
+tags: [dora, compliance, airflow, qdrant, agent, vllm, gpu, regtech]
 blueprintFile: dora-compliance-vllm-1-0-0.yaml
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
@@ -26,7 +26,7 @@ localFrontend:
   openPath: /
   env:
     POSTGRES_URI: "postgresql://dora:dora@localhost:5432/dora"
-    MILVUS_URI: "http://localhost:19530"
+    QDRANT_URL: "http://localhost:6333"
     OPENAI_BASE_URL: "http://localhost:8000/v1"
     LLM_MODEL: "Qwen/Qwen2.5-3B-Instruct"
     OPENAI_API_KEY: "EMPTY"
@@ -38,7 +38,7 @@ localFrontend:
     AIRFLOW_PASSWORD: "admin"
   portForwards:
     - {name: dora-db, service: dora-db, local: 5432, remote: 5432}
-    - {name: milvus, service: milvus, local: 19530, remote: 19530}
+    - {name: qdrant, service: qdrant, local: 6333, remote: 6333}
     - {name: vllm, service: vllm-router-service, local: 8000, remote: 80}
     - {name: airflow, service: apache-airflow-api-server, local: 8080, remote: 8080}
 # In-cluster component UIs the marketplace can port-forward on demand (button
@@ -63,7 +63,7 @@ guide:
       In the SUSE AI Factory UI, go to **Blueprints → DORA Compliance Analysis (vLLM) → Create
       AIWorkload**, choose a target **namespace**, and deploy. This needs a node with a **real
       NVIDIA GPU** and the GPU Operator; vLLM downloads `Qwen/Qwen2.5-3B-Instruct` on first
-      start. Wait until PostgreSQL, Milvus, vLLM and Airflow are Ready, then enter the
+      start. Wait until PostgreSQL, Qdrant, vLLM and Airflow are Ready, then enter the
       namespace you chose below.
     action: {type: namespace-input}
   - title: Run the pipeline in Airflow
@@ -75,14 +75,14 @@ guide:
       1. `simulate_incidents` — generate synthetic ICT incidents → PostgreSQL.
       2. `classify_and_load` — apply the BaFin Article 18 rules → severity + deadlines.
       3. `build_marts` — BaFin report + vendor-risk marts (+ data-quality checks).
-      4. `index_incidents` — embed incidents → Milvus (agent semantic search).
+      4. `index_incidents` — embed incidents → Qdrant (agent semantic search).
       5. `check_compliance_alerts` — SLA-breach mart (deadlines lapsed / imminent).
 
       (Or just ask the agent in the UI to "run the whole pipeline" — it triggers them for you.)
     action: {type: trigger-dags}
   - title: Launch the compliance dashboard
     body: |
-      Starts `kubectl port-forward` to Postgres (5432), Milvus (19530), the vLLM router
+      Starts `kubectl port-forward` to Postgres (5432), Qdrant (6333), the vLLM router
       (`vllm-router-service:80`) and the Airflow API server (8080) and runs the SUSE DORA
       compliance UI locally. If your Helm release name isn't `vllm`, adjust the port-forward
       service to `<release>-router-service`.
@@ -94,6 +94,6 @@ guide:
       severity, which authority + deadline, recommended reporting action). Then use the
       **Compliance agent** panel — ask e.g. *"which ICT providers caused critical incidents?"*
       or *"show breached reporting deadlines"*; the agent searches the data (via Airflow's
-      Postgres connection + Milvus) and can re-run the pipeline via the Airflow REST API,
+      Postgres connection + Qdrant) and can re-run the pipeline via the Airflow REST API,
       showing its tool calls as it works.
     action: {type: open-url, url: "http://localhost:8000"}

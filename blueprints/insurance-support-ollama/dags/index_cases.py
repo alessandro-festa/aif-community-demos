@@ -3,7 +3,7 @@ DAG: index_cases
 
 Build the "similar case" semantic index. Reads resolved/closed support tickets from
 Postgres, embeds each (subject + body) via the OpenAI-compatible /v1/embeddings
-endpoint, and upserts them into the Milvus `support_cases` collection with filterable
+endpoint, and upserts them into the Qdrant `support_cases` collection with filterable
 metadata. The chat UI queries this index and REDACTS each hit (Presidio) before
 showing it. Re-runnable: drops and recreates the collection.
 
@@ -21,10 +21,10 @@ from airflow.decorators import dag, task
 from common import (
     CASES_COLLECTION,
     embed,
-    milvus_create_collection,
-    milvus_drop_collection,
-    milvus_insert,
     pg_query,
+    qdrant_create_collection,
+    qdrant_drop_collection,
+    qdrant_insert,
 )
 
 
@@ -70,8 +70,8 @@ def index_cases():
 
         # Determine embedding dimension from the first row, then (re)create the collection.
         first_vec = embed(f"{rows[0][1]}\n{rows[0][2]}")
-        milvus_drop_collection(CASES_COLLECTION)
-        milvus_create_collection(len(first_vec), CASES_COLLECTION)
+        qdrant_drop_collection(CASES_COLLECTION)
+        qdrant_create_collection(len(first_vec), CASES_COLLECTION)
 
         out = []
         for i, (tid, subject, body, status, acc, product, paid, within, res) in enumerate(rows):
@@ -89,7 +89,7 @@ def index_cases():
                 "within_policy": 1 if within else 0,
                 "resolution": (res or "")[:4096],
             })
-        milvus_insert(out, CASES_COLLECTION)
+        qdrant_insert(out, CASES_COLLECTION)
         return {"indexed": len(out), "dim": len(first_vec), "collection": CASES_COLLECTION}
 
     build_index()

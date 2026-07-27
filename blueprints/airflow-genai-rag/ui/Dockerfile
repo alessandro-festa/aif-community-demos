@@ -18,7 +18,7 @@ USER 10001
 EXPOSE 8000
 # In-cluster defaults (override for local use).
 ENV OLLAMA_BASE_URL=http://ollama:11434 \
-    MILVUS_URI=http://milvus:19530 \
+    QDRANT_URL=http://qdrant:6333 \
     EMBED_MODEL=nomic-embed-text \
     GEN_MODEL=astra-custom \
     KB_COLLECTION=kb

@@ -2,7 +2,7 @@
 
 A financial-crime / money-laundering / anomaly-detection blueprint. **Apache Airflow**
 generates and manipulates a synthetic fraud graph, **trains an XGBoost classifier** on the
-labelled data, and indexes behavioural feature vectors in **Milvus** for anomaly detection; a
+labelled data, and indexes behavioural feature vectors in **Qdrant** for anomaly detection; a
 local SUSE-styled investigator UI uses an LLM served by **vLLM (`Qwen/Qwen2.5-3B-Instruct`)**
 as an **AML analyst** to classify and explain flagged accounts.
 
@@ -29,7 +29,7 @@ Blueprint CR: [`fraud-detection-vllm-1-0-0.yaml`](fraud-detection-vllm-1-0-0.yam
 |-----------|-------|------|
 | **Apache Airflow** | `apache-airflow` `1.22.0` | orchestrates generate → train → anomaly (DAGs via git-sync) |
 | **PostgreSQL** | `postgresql` `0.6.0` (`fraud-db`) | accounts, transactions, labels, scores, flagged accounts |
-| **Milvus** | `milvus` `5.0.22` | per-account behavioural feature vectors for anomaly detection |
+| **Qdrant** | `qdrant` `1.17.0` | per-account behavioural feature vectors for anomaly detection |
 | **vLLM** | `vllm` `0.1.10` | `Qwen/Qwen2.5-3B-Instruct` — the AML analyst LLM, **GPU** |
 | **Investigator UI** | — (local) | FastAPI + SUSE dashboard in [`ui/`](ui/), runs locally |
 
@@ -52,7 +52,7 @@ pipeline description, DAG list, and notes on `SCALE_FACTOR` and DAG dependencies
 
 Pick **Fraud / AML Detection (vLLM, GPU)** and follow the guide: import → create the
 AIWorkload in AI Factory (real GPU node; model downloads on first start) → run the three DAGs
-→ it starts the local UI + port-forwards (Postgres, Milvus, vLLM router) → investigate.
+→ it starts the local UI + port-forwards (Postgres, Qdrant, vLLM router) → investigate.
 
 ## Notes
 

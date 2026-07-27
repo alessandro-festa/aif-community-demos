@@ -32,7 +32,7 @@ EXPOSE 8000
 ENV CHAT_BASE_URL=http://vllm-router-service:80/v1 \
     EMBED_BASE_URL=http://ollama:11434/v1 \
     EMBED_MODEL=nomic-embed-text \
-    MILVUS_URI=http://milvus:19530 \
+    QDRANT_URL=http://qdrant:6333 \
     POSTGRES_URI=postgresql://insurance:insurance@support-db:5432/insurance \
     CASES_COLLECTION=support_cases \
     CLIP_MODEL=clip-ViT-B-32

@@ -49,7 +49,7 @@ async function loadHealth() {
   try {
     const h = await getJSON("/api/health");
     const ok = (b) => (b ? "✓" : "✗");
-    $("health").textContent = `Postgres ${ok(h.postgres)} · Milvus ${ok(h.milvus)} · LLM ${ok(h.llm)} (${h.model}) · Airflow ${ok(h.airflow)} · pipeline ${h.ready ? "ready ✓" : "not run ✗"}`;
+    $("health").textContent = `Postgres ${ok(h.postgres)} · Qdrant ${ok(h.qdrant)} · LLM ${ok(h.llm)} (${h.model}) · Airflow ${ok(h.airflow)} · pipeline ${h.ready ? "ready ✓" : "not run ✗"}`;
     $("tag").textContent = `${h.model} · SUSE`;
   } catch (e) { $("health").textContent = "backend unreachable: " + e; }
 }

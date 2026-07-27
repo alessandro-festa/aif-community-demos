@@ -29,7 +29,7 @@ localFrontend:
     LITELLM_BASE_URL: "http://localhost:4000"
     LITELLM_MASTER_KEY: "sk-guardrails-demo"
     # Single warm model for the chat UI (memory-constrained CPU box).
-    CHAT_MODEL: "llama-3.2-1b"
+    CHAT_MODEL: "qwen-2.5-0.5b"
   portForwards:
     - {name: litellm, service: litellm, local: 4000, remote: 4000}
 # In-cluster component UIs the marketplace can port-forward on demand (button enabled
@@ -128,8 +128,8 @@ guide:
     body: |
       In the SUSE AI Factory UI, go to **Blueprints → FinOps Multi-Model Gateway
       (Ollama) → Create AIWorkload**, choose a target **namespace**, and deploy. Wait
-      for Ollama (it pulls three models on first start — llama3.2:1b, qwen2.5:1.5b,
-      qwen2.5:3b), LiteLLM + its Postgres, the two Presidio pods, the LiteLLM exporter,
+      for Ollama (it pulls three models on first start — qwen2.5:0.5b, qwen3.5:0.8b,
+      llama3.2:1b), LiteLLM + its Postgres, the two Presidio pods, the LiteLLM exporter,
       Prometheus, Grafana, OpenCost, and Airflow to be Ready. This is a large workload —
       give it several minutes. Enter the namespace you chose below.
     action: {type: namespace-input}

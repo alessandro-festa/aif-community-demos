@@ -3,11 +3,11 @@ displayName: Insurance Support Copilot (Ollama, CPU)
 description: >-
   A customer-support automation demo for an insurance company. Airflow generates a
   synthetic support dataset (customers, families, policies, claims, tickets) into
-  Postgres and a Milvus semantic index; a local chat UI lets a customer upload an
+  Postgres and a Qdrant semantic index; a local chat UI lets a customer upload an
   accident photo, open/close tickets, and see similar past cases — redacted (PII
   removed) with Presidio. Chat + vision via Ollama (qwen2.5vl). Demo only.
 category: customer-support
-tags: [customer-support, insurance, chatbot, airflow, postgres, milvus, presidio, ollama, cpu]
+tags: [customer-support, insurance, chatbot, airflow, postgres, qdrant, presidio, ollama, cpu]
 blueprintFile: insurance-support-ollama-1-0-0.yaml
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
@@ -50,13 +50,13 @@ localFrontend:
     EMBED_BASE_URL: "http://localhost:11434/v1"
     EMBED_MODEL: "nomic-embed-text"
     OPENAI_API_KEY: "EMPTY"
-    MILVUS_URI: "http://localhost:19530"
+    QDRANT_URL: "http://localhost:6333"
     POSTGRES_URI: "postgresql://insurance:insurance@localhost:5433/insurance"
     CASES_COLLECTION: "support_cases"
     CLIP_MODEL: "clip-ViT-B-32"
   portForwards:
     - {name: ollama,     service: ollama,     local: 11434, remote: 11434}
-    - {name: milvus,     service: milvus,     local: 19530, remote: 19530}
+    - {name: qdrant,     service: qdrant,     local: 6333,  remote: 6333}
     - {name: support-db, service: support-db, local: 5433,  remote: 5432}
 # Chat/base LLM size (CPU). The DAG builds "support-agent" from this; the vision
 # (qwen2.5vl:3b) and embedding (nomic-embed-text) models stay pinned. No frontend
@@ -65,8 +65,8 @@ modelSizes:
   default: small
   replace: "{{MODEL}}"
   options:
-    - {id: small, label: "1.5B — faster (CPU)", model: "qwen2.5:1.5b"}
-    - {id: large, label: "3B — higher quality", model: "qwen2.5:3b"}
+    - {id: small, label: "0.5B — fastest (CPU)", model: "qwen2.5:0.5b"}
+    - {id: large, label: "0.8B — higher quality", model: "qwen3.5:0.8b"}
 # The DAGs bpm triggers sequentially from the guide (trigger-dags action) — same
 # order as the manual steps below. Each waits for the previous to finish; they can
 # still be run manually in the Airflow UI. Defaults: apache-airflow-api-server:8080,
@@ -87,7 +87,7 @@ guide:
     body: |
       In the SUSE AI Factory UI, go to **Blueprints → Insurance Support Copilot
       (Ollama, CPU) → Create AIWorkload**, choose a target **namespace**, and deploy.
-      Wait for Postgres, Milvus, Ollama (it pulls `qwen2.5:3b` + `qwen2.5vl:3b` +
+      Wait for Postgres, Qdrant, Ollama (it pulls `qwen2.5:0.5b` + `qwen2.5vl:3b` +
       `nomic-embed-text` on first start — several GB), and Airflow to be Ready. Enter
       the namespace below.
     action: {type: namespace-input}
@@ -97,14 +97,14 @@ guide:
       **admin / admin**, then trigger the DAGs in order:
 
       1. **generate_dataset** — synthesises the insurance data into Postgres.
-      2. **index_cases** — embeds resolved/closed tickets into Milvus (semantic search).
+      2. **index_cases** — embeds resolved/closed tickets into Qdrant (semantic search).
       3. **customize_model** — creates the `support-agent` persona model in Ollama.
 
       Wait for each to finish (green) before the next.
     action: {type: trigger-dags}
   - title: Launch the demo UI
     body: |
-      Starts `kubectl port-forward` to Ollama, Milvus, and Postgres, then runs the
+      Starts `kubectl port-forward` to Ollama, Qdrant, and Postgres, then runs the
       Insurance Support Copilot UI locally. First run installs a CPU build of
       torch + sentence-transformers + Presidio (a few minutes).
     action: {type: start-frontend}

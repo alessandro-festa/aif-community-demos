@@ -5,7 +5,7 @@ Generate a SYNTHETIC insurance customer-support dataset (stdlib only — no Fake
 load it into Postgres: customers + households/family links, policies, accident types,
 claims (with derived pay/within-policy decisions), and support tickets (with a
 realistic status lifecycle). Ticket bodies are templated-then-varied per accident type
-so the Milvus "similar case" search returns genuinely related precedents.
+so the Qdrant "similar case" search returns genuinely related precedents.
 
 Uses only Python stdlib + psycopg2 (psycopg2 ships in the AppCo Airflow image, which
 already uses Postgres for its own metadata) — so it runs on the STOCK apache-airflow

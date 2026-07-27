@@ -18,7 +18,7 @@ USER 10001
 
 EXPOSE 8000
 ENV POSTGRES_URI=postgresql://dora:dora@dora-db:5432/dora \
-    MILVUS_URI=http://milvus:19530 \
+    QDRANT_URL=http://qdrant:6333 \
     OPENAI_BASE_URL=http://vllm-router-service/v1 \
     LLM_MODEL=Qwen/Qwen2.5-3B-Instruct \
     OPENAI_API_KEY=EMPTY \

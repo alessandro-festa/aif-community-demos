@@ -3,7 +3,7 @@
 An EU **DORA (Digital Operational Resilience Act)** ICT-incident compliance blueprint.
 **Apache Airflow** simulates synthetic ICT operational incidents, classifies each one against
 the **BaFin Article 18** thresholds (CRITICAL / MAJOR / MINOR + reporting deadline), builds
-compliance **marts** in **PostgreSQL**, and indexes the incidents in **Milvus** for semantic
+compliance **marts** in **PostgreSQL**, and indexes the incidents in **Qdrant** for semantic
 search. A local SUSE-styled UI shows the severity split, the BaFin reporting queue and SLA
 breaches; an **LLM served by vLLM on a GPU (`Qwen/Qwen2.5-3B-Instruct`)** **explains**
 individual incidents and acts as a compliance **agent** that searches the data and drives the
@@ -11,7 +11,7 @@ pipeline. **Requires a real NVIDIA GPU node + the GPU Operator.**
 
 > **Faithful to the classifier rules of [Chirag-Kathuria-009/DORA-Pipeline](https://github.com/Chirag-Kathuria-009/DORA-Pipeline)**
 > (MIT). The reference's Kafka + PySpark + Iceberg + dbt + Great Expectations + Superset stack
-> is replaced by Airflow Python tasks + PostgreSQL + Milvus + this local UI — the all-SUSE
+> is replaced by Airflow Python tasks + PostgreSQL + Qdrant + this local UI — the all-SUSE
 > Application Collection pattern. See [`ATTRIBUTION.md`](ATTRIBUTION.md).
 >
 > The reference pipeline has **no LLM** — the *explain* + *agent* layer is this blueprint's
@@ -35,7 +35,7 @@ Blueprint CR: [`dora-compliance-vllm-1-0-0.yaml`](dora-compliance-vllm-1-0-0.yam
 |-----------|-------|------|
 | **Apache Airflow** | `apache-airflow` `1.22.0` | orchestrates simulate → classify → marts → index → alerts (DAGs via git-sync) |
 | **PostgreSQL** | `postgresql` `0.6.0` (`dora-db`) | raw incidents, classifications, and the compliance marts |
-| **Milvus** | `milvus` `5.0.22` | incident embeddings for the agent's semantic search |
+| **Qdrant** | `qdrant` `1.17.0` | incident embeddings for the agent's semantic search |
 | **vLLM** | `vllm` `0.1.10` | `Qwen/Qwen2.5-3B-Instruct` on GPU — the compliance analyst + agent LLM (tool-calling via `--tool-call-parser=hermes`) |
 | **Compliance UI** | — (local) | FastAPI + SUSE dashboard in [`ui/`](ui/), runs locally |
 
@@ -49,7 +49,7 @@ Blueprint CR: [`dora-compliance-vllm-1-0-0.yaml`](dora-compliance-vllm-1-0-0.yam
    notification deadline (4h / 72h) and ICT-provider concentration tier.
 3. **`build_marts`** — `mart_bafin_report` + `mart_vendor_risk` (+ data-quality checks that
    fail loudly, replacing Great Expectations).
-4. **`index_incidents`** — embed incidents and load them into Milvus (a lightweight
+4. **`index_incidents`** — embed incidents and load them into Qdrant (a lightweight
    deterministic hashing embedding — no extra model, identical on CPU and GPU).
 5. **`check_compliance_alerts`** — `mart_sla_breach`: reporting deadlines breached / imminent.
 6. **`clear_data`** — reset everything.
@@ -59,7 +59,7 @@ Blueprint CR: [`dora-compliance-vllm-1-0-0.yaml`](dora-compliance-vllm-1-0-0.yam
 - **Explain** — click **Explain** on any incident: the LLM returns a compliance verdict
   (severity justification, authority + deadline, recommended reporting action).
 - **Compliance agent** — an OpenAI **function-calling** loop. Its tools search classified
-  incidents (through Airflow's Postgres connection), run Milvus semantic search, read the BaFin
+  incidents (through Airflow's Postgres connection), run Qdrant semantic search, read the BaFin
   / vendor-risk / SLA-breach marts, and **trigger / monitor the pipeline via the Airflow REST
   API** (Airflow 3: `POST /auth/token` → `/api/v2`). The UI shows the agent's tool-call trace,
   so you can watch it "act like an agent". Try *"which ICT providers caused critical

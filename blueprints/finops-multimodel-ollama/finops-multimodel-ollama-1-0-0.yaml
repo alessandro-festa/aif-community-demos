@@ -89,7 +89,7 @@ spec:
         repository: containers/ollama
         tag: 0.21.2-11.48
       # Memory is tight on CPU: keep exactly ONE model resident and never unload it,
-      # so the chat model (llama3.2:1b, warmed at startup via ollama.models.run) stays
+      # so the chat model (qwen2.5:0.5b, warmed at startup via ollama.models.run) stays
       # hot and the node doesn't try to hold all three at once. generate_traffic still
       # works — Ollama swaps models in on demand when that DAG hits the larger ones.
       extraEnv:
@@ -100,14 +100,14 @@ spec:
           enabled: false
           draEnabled: false
         models:
-          # Pull all three; run only the smallest to warm it (the others load on
-          # demand when LiteLLM routes to them — keeps CPU/RAM sane).
+          # Pull all three (0.5B/0.8B/1B — max CPU speed); run only the smallest to
+          # warm it (the others load on demand when LiteLLM routes to them).
           pull:
+          - qwen2.5:0.5b
+          - qwen3.5:0.8b
           - llama3.2:1b
-          - qwen2.5:1.5b
-          - qwen2.5:3b
           run:
-          - llama3.2:1b
+          - qwen2.5:0.5b
         port: 11434
       persistentVolume:
         enabled: true
@@ -176,23 +176,23 @@ spec:
         litellm_settings:
           drop_params: true
         # Three models at DIFFERENT prices (USD per token). These make the FinOps
-        # dashboards interesting: the same tokens cost 8x more on the 3B than the 1B.
+        # dashboards interesting: the same tokens cost 8x more on the 1B than the 0.5B.
         model_list:
-        - model_name: llama-3.2-1b
+        - model_name: qwen-2.5-0.5b
           litellm_params:
-            model: ollama_chat/llama3.2:1b
+            model: ollama_chat/qwen2.5:0.5b
             api_base: http://ollama:11434
             input_cost_per_token: 0.0000001    # $0.10 / 1M input tokens
             output_cost_per_token: 0.0000002   # $0.20 / 1M output tokens
-        - model_name: qwen-2.5-1.5b
+        - model_name: qwen-3.5-0.8b
           litellm_params:
-            model: ollama_chat/qwen2.5:1.5b
+            model: ollama_chat/qwen3.5:0.8b
             api_base: http://ollama:11434
             input_cost_per_token: 0.0000003    # $0.30 / 1M
             output_cost_per_token: 0.0000006   # $0.60 / 1M
-        - model_name: qwen-2.5-3b
+        - model_name: llama-3.2-1b
           litellm_params:
-            model: ollama_chat/qwen2.5:3b
+            model: ollama_chat/llama3.2:1b
             api_base: http://ollama:11434
             input_cost_per_token: 0.0000008    # $0.80 / 1M
             output_cost_per_token: 0.0000016   # $1.60 / 1M

@@ -40,9 +40,9 @@ HTTP_TIMEOUT = 120
 # traffic + backfill DAGs agree on model mix and pricing.
 MODELS = [
     # model_name,       input_$/1k, output_$/1k, popularity weight
-    ("llama-3.2-1b",    0.0001,     0.0002,      0.55),
-    ("qwen-2.5-1.5b",   0.0003,     0.0006,      0.30),
-    ("qwen-2.5-3b",     0.0008,     0.0016,      0.15),
+    ("qwen-2.5-0.5b",   0.0001,     0.0002,      0.55),
+    ("qwen-3.5-0.8b",   0.0003,     0.0006,      0.30),
+    ("llama-3.2-1b",    0.0008,     0.0016,      0.15),
 ]
 
 # Per-team virtual keys (fixed key values → deterministic, no state to pass between

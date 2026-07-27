@@ -2,25 +2,25 @@
 DORA Compliance Analysis dashboard (SUSE) — backend.
 
 Reads the Airflow-produced DORA tables in PostgreSQL (incidents, incidents_classified,
-mart_bafin_report, mart_vendor_risk, mart_sla_breach) and a Milvus incident index, and uses a
+mart_bafin_report, mart_vendor_risk, mart_sla_breach) and a Qdrant incident index, and uses a
 locally-served LLM (Ollama or vLLM, OpenAI-compatible) in two ways:
 
   * /api/explain — a per-incident DORA compliance-analyst verdict (why this severity, which
     authority + deadline, recommended reporting action) — the "explain what happened" pattern.
   * /api/agent — a tool-calling COMPLIANCE AGENT: an OpenAI function-calling loop whose tools
-    search the data through Airflow's Postgres connection, run Milvus semantic search, read the
+    search the data through Airflow's Postgres connection, run Qdrant semantic search, read the
     compliance marts, and trigger/monitor the pipeline via the Airflow REST API. The response
     includes the agent's tool-call trace so you can see it "acting like an agent".
 
 The SAME code drives both variants — only env differs:
-  * Ollama : OPENAI_BASE_URL=http://localhost:11434/v1  LLM_MODEL=qwen2.5:1.5b
+  * Ollama : OPENAI_BASE_URL=http://localhost:11434/v1  LLM_MODEL=qwen2.5:0.5b
   * vLLM   : OPENAI_BASE_URL=http://localhost:8000/v1   LLM_MODEL=Qwen/Qwen2.5-3B-Instruct
 
 Config (env):
   POSTGRES_URI     postgresql://dora:dora@localhost:5432/dora
-  MILVUS_URI       http://localhost:19530
+  QDRANT_URL       http://localhost:6333
   OPENAI_BASE_URL  http://localhost:11434/v1
-  LLM_MODEL        qwen2.5:1.5b
+  LLM_MODEL        qwen2.5:0.5b
   OPENAI_API_KEY   EMPTY
   EMBED_DIM        256
   AIRFLOW_BASE_URL http://localhost:8080   (Airflow 3 REST API + /auth/token)
@@ -47,10 +47,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 POSTGRES_URI = os.environ.get("POSTGRES_URI", "postgresql://dora:dora@localhost:5432/dora")
-MILVUS_URI = os.environ.get("MILVUS_URI", "http://localhost:19530").rstrip("/")
-MILVUS_TOKEN = os.environ.get("MILVUS_TOKEN", "")
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333").rstrip("/")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1").rstrip("/")
-LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:1.5b")
+LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:0.5b")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "EMPTY")
 EMBED_DIM = int(os.environ.get("EMBED_DIM", "256"))
 INCIDENTS_COLLECTION = os.environ.get("INCIDENTS_COLLECTION", "incidents")
@@ -59,7 +59,7 @@ AIRFLOW_USER = os.environ.get("AIRFLOW_USER", "admin")
 AIRFLOW_PASSWORD = os.environ.get("AIRFLOW_PASSWORD", "admin")
 HTTP_TIMEOUT = 120
 # LLM generation on a small CPU model can be slow; give chat() a longer read timeout than
-# the fast Postgres/Milvus calls. Override with LLM_TIMEOUT if needed.
+# the fast Postgres/Qdrant calls. Override with LLM_TIMEOUT if needed.
 LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "300"))
 # Max chars of a tool result fed back into the model — keeps the agent context (and thus
 # per-step generation time) small on CPU. The UI still shows full data via its own endpoints.
@@ -122,35 +122,30 @@ def hash_embed(text: str, dim: int = EMBED_DIM) -> list[float]:
     return [v / norm for v in vec]
 
 
-def _milvus_post(path: str, body: dict) -> dict:
-    headers = {"Content-Type": "application/json"}
-    if MILVUS_TOKEN:
-        headers["Authorization"] = f"Bearer {MILVUS_TOKEN}"
-    r = requests.post(f"{MILVUS_URI}{path}", json=body, headers=headers, timeout=HTTP_TIMEOUT)
-    r.raise_for_status()
-    data = r.json()
-    if isinstance(data, dict) and data.get("code") not in (0, None):
-        raise RuntimeError(f"Milvus error on {path}: {data}")
-    return data
+def _qdrant_headers() -> dict:
+    h = {"Content-Type": "application/json"}
+    if QDRANT_API_KEY:
+        h["api-key"] = QDRANT_API_KEY
+    return h
 
 
-def milvus_ok() -> bool:
+def qdrant_ok() -> bool:
     try:
-        _milvus_post("/v2/vectordb/collections/list", {})
+        r = requests.get(f"{QDRANT_URL}/collections", headers=_qdrant_headers(),
+                         timeout=HTTP_TIMEOUT)
+        r.raise_for_status()
         return True
     except Exception:
         return False
 
 
-def milvus_search_incidents(query: str, top_k: int = 5) -> list[dict]:
-    data = _milvus_post("/v2/vectordb/entities/search", {
-        "collectionName": INCIDENTS_COLLECTION,
-        "data": [hash_embed(query)],
-        "limit": top_k,
-        "outputFields": ["incident_id", "dora_severity", "incident_type", "text"],
-        "searchParams": {"metricType": "COSINE"},
-    })
-    return data.get("data") or []
+def qdrant_search_incidents(query: str, top_k: int = 5) -> list[dict]:
+    r = requests.post(f"{QDRANT_URL}/collections/{INCIDENTS_COLLECTION}/points/search",
+                      json={"vector": hash_embed(query), "limit": top_k, "with_payload": True},
+                      headers=_qdrant_headers(), timeout=HTTP_TIMEOUT)
+    r.raise_for_status()
+    hits = r.json().get("result") or []
+    return [{**(h.get("payload") or {}), "distance": h.get("score", 0)} for h in hits]
 
 
 # --------------------------------------------------------------------------- #
@@ -262,10 +257,10 @@ def tool_search_incidents(severity: str = "", incident_type: str = "", provider:
 
 
 def tool_semantic_search(query: str, limit: int = 5) -> dict:
-    if not milvus_ok():
-        return {"error": "Milvus unreachable"}
+    if not qdrant_ok():
+        return {"error": "Qdrant unreachable"}
     try:
-        hits = milvus_search_incidents(query, max(1, min(int(limit or 5), 10)))
+        hits = qdrant_search_incidents(query, max(1, min(int(limit or 5), 10)))
     except Exception as e:
         return {"error": f"semantic search failed: {e}"}
     return {"matches": [{"incident_id": h.get("incident_id"),
@@ -347,7 +342,7 @@ TOOLS = [
             "limit": {"type": "integer"}}}}},
     {"type": "function", "function": {
         "name": "semantic_search_incidents",
-        "description": "Find incidents semantically similar to a free-text query (Milvus).",
+        "description": "Find incidents semantically similar to a free-text query (Qdrant).",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string"}, "limit": {"type": "integer"}},
             "required": ["query"]}}},
@@ -426,7 +421,7 @@ def health():
         airflow = r.status_code in (200, 401) and ("version" in r.text.lower() or r.status_code == 401)
     except Exception:
         pass
-    return {"postgres": pg_ok(), "milvus": milvus_ok(), "llm": llm, "airflow": airflow,
+    return {"postgres": pg_ok(), "qdrant": qdrant_ok(), "llm": llm, "airflow": airflow,
             "model": LLM_MODEL, "ready": table_exists("incidents_classified")}
 
 

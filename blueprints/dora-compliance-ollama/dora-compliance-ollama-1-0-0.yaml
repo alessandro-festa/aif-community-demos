@@ -8,7 +8,7 @@ metadata:
 # DORA Compliance Analysis (Ollama, CPU).
 # Apache Airflow simulates synthetic ICT operational incidents, classifies each against the
 # EU DORA / BaFin Article 18 thresholds (CRITICAL / MAJOR / MINOR + notification deadline),
-# builds compliance marts in PostgreSQL, and indexes the incidents in Milvus for semantic
+# builds compliance marts in PostgreSQL, and indexes the incidents in Qdrant for semantic
 # search. A local SUSE UI reads the results; a local LLM (Ollama, qwen2.5) EXPLAINS incidents
 # and acts as a compliance AGENT that searches the data (through Airflow's Postgres
 # connection) and can trigger/monitor the pipeline via the Airflow REST API. All components
@@ -16,7 +16,7 @@ metadata:
 #
 # Faithful to the DORA classifier rules of Chirag-Kathuria-009/DORA-Pipeline; the reference's
 # Kafka/PySpark/Iceberg/dbt/Great Expectations/Superset stack is replaced by Airflow Python
-# tasks + PostgreSQL + Milvus + a local FastAPI UI (the all-SUSE-AppCo pattern). The reference
+# tasks + PostgreSQL + Qdrant + a local FastAPI UI (the all-SUSE-AppCo pattern). The reference
 # has no LLM — the explain + agent layer is this blueprint's addition.
 spec:
   source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
@@ -28,15 +28,15 @@ spec:
     BaFin Article 18 thresholds (CRITICAL — 4h deadline / MAJOR — 72h / MINOR — internal
     log), enriches them with ICT third-party provider concentration risk, builds compliance
     marts (BaFin report, vendor risk, SLA breaches) in PostgreSQL, and indexes the incidents
-    in Milvus for semantic search. A local SUSE-styled UI shows severity distribution, the
+    in Qdrant for semantic search. A local SUSE-styled UI shows severity distribution, the
     BaFin reporting queue and SLA breaches; a local LLM (Ollama, qwen2.5) EXPLAINS individual
     incidents and acts as a compliance AGENT — an OpenAI function-calling loop whose tools
-    query the data through Airflow's Postgres connection, run Milvus semantic search, and
+    query the data through Airflow's Postgres connection, run Qdrant semantic search, and
     trigger/monitor the pipeline via the Airflow REST API.
 
     Faithful to the DORA classifier rules of Chirag-Kathuria-009/DORA-Pipeline; the
     reference's Kafka/PySpark/Iceberg/dbt/Great Expectations/Superset stack is replaced by
-    Airflow Python tasks + PostgreSQL + Milvus + this local UI, all from the SUSE Application
+    Airflow Python tasks + PostgreSQL + Qdrant + this local UI, all from the SUSE Application
     Collection. The reference has no LLM — the explain + agent layer is this blueprint's
     addition.
 
@@ -67,55 +67,17 @@ spec:
           enabled: true
           size: 8Gi
   # ----------------------------------------------------------------------- #
-  # Milvus — incident embeddings for the compliance agent's semantic search.
+  # Qdrant — incident embeddings for the compliance agent's semantic search.
   # ----------------------------------------------------------------------- #
-  - chartName: milvus
-    chartRepo: application-collection
-    chartVersion: 5.0.22
+  - chartName: qdrant
+    chartRepo: suse-ai-registry
+    chartVersion: 1.17.0
     values:
-      cluster:
-        enabled: false
-      image:
-        all:
-          pullPolicy: IfNotPresent
-          registry: dp.apps.rancher.io
-          repository: containers/milvus
-          tag: 2.6.18-8.4
-      etcd:
-        enabled: true
-        replicaCount: 1
-      kafka:
-        enabled: false
-      minio:
-        enabled: true
-        mode: standalone
-        name: minio
-        replicas: 1
-        rootPath: file
-        users:
-        - accessKey: minioadmin
-          policy: consoleAdmin
-          secretKey: minioadmin
-      proxy:
-        enabled: true
-        http:
-          enabled: true
-      standalone:
-        messageQueue: woodpecker
-        persistence:
-          enabled: true
-          persistentVolumeClaim:
-            accessModes: ReadWriteOnce
-            size: 50Gi
-      streaming:
-        enabled: true
-        woodpecker:
-          embedded: true
-          storage:
-            type: minio
+      fullnameOverride: qdrant
+      persistence:
+        accessModes: ["ReadWriteOnce"]
+        size: 5Gi
       service:
-        port: 19530
-        portName: milvus
         type: ClusterIP
   # ----------------------------------------------------------------------- #
   # Ollama — local LLM (compliance analyst + agent), CPU.
@@ -192,8 +154,8 @@ spec:
       env:
       - name: POSTGRES_URI
         value: postgresql://dora:dora@dora-db:5432/dora
-      - name: MILVUS_URI
-        value: http://milvus:19530
+      - name: QDRANT_URL
+        value: http://qdrant:6333
       - name: N_INCIDENTS
         value: "600"
       ingress:

@@ -1,7 +1,7 @@
 """
 DAG: index_incidents
 
-Embed every classified incident and (re)load the vectors into Milvus so the compliance
+Embed every classified incident and (re)load the vectors into Qdrant so the compliance
 agent in the UI can do semantic search ("find incidents like a cyber attack on the payments
 gateway"). Embeddings use a lightweight deterministic hashing embedding (common.hash_embed) —
 no extra model to pull, and identical on the CPU (Ollama) and GPU (vLLM) variants so search
@@ -13,7 +13,7 @@ import pendulum
 from airflow.decorators import dag, task
 
 from common import (EMBED_DIM, INCIDENTS_COLLECTION, hash_embed,
-                    milvus_create_collection, milvus_drop_collection, milvus_insert,
+                    qdrant_create_collection, qdrant_drop_collection, qdrant_insert,
                     pg_query)
 
 
@@ -34,8 +34,8 @@ def index_incidents():
         if not rows:
             raise RuntimeError("no incidents_classified — run classify_and_load first")
 
-        milvus_drop_collection(INCIDENTS_COLLECTION)
-        milvus_create_collection(EMBED_DIM, INCIDENTS_COLLECTION)
+        qdrant_drop_collection(INCIDENTS_COLLECTION)
+        qdrant_create_collection(EMBED_DIM, INCIDENTS_COLLECTION)
 
         data = []
         for i, r in enumerate(rows):
@@ -51,7 +51,7 @@ def index_incidents():
                 "incident_type": itype or "",
                 "text": text[:4096],
             })
-        milvus_insert(data, INCIDENTS_COLLECTION)
+        qdrant_insert(data, INCIDENTS_COLLECTION)
         return {"indexed": len(data)}
 
     index()

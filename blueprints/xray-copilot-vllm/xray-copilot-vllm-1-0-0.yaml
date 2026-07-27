@@ -8,7 +8,7 @@ metadata:
 # Chest X-ray Copilot (vLLM, GPU) — a medical-imaging demo.
 # A local SUSE-styled UI uploads a chest X-ray and asks a medical vision-language
 # model (served by vLLM over the OpenAI-compatible API) to analyse it, then embeds
-# the image with BiomedCLIP (in the UI, on CPU) and stores it in Milvus for
+# the image with BiomedCLIP (in the UI, on CPU) and stores it in Qdrant for
 # semantic (text->image) and similarity (image->image) search.
 #
 # Models (served behind vllm-router-service:80):
@@ -28,7 +28,7 @@ spec:
   version: 1.0.0
   description: |-
     Medical-imaging demo: analyse a chest X-ray with a medical vision-language model
-    and search a Milvus index of X-rays by image or by text. vLLM serves LLaVA-Med 7B
+    and search a Qdrant index of X-rays by image or by text. vLLM serves LLaVA-Med 7B
     (baseline, and, optionally, MedGemma 1.5 4B) on an NVIDIA GPU; a local SUSE-styled
     UI runs the analysis and computes BiomedCLIP embeddings on CPU.
 
@@ -78,54 +78,16 @@ spec:
         containerPort: 8000
         servicePort: 80
   # ----------------------------------------------------------------------------
-  # Milvus — vector DB for the BiomedCLIP X-ray embeddings (standalone + REST v2).
-  # Reachable in-cluster at http://milvus:19530.
+  # Qdrant — vector DB for the BiomedCLIP X-ray embeddings.
+  # Reachable in-cluster at http://qdrant:6333 (REST).
   # ----------------------------------------------------------------------------
-  - chartName: milvus
-    chartRepo: application-collection
-    chartVersion: 5.0.22
+  - chartName: qdrant
+    chartRepo: suse-ai-registry
+    chartVersion: 1.17.0
     values:
-      cluster:
-        enabled: false
-      image:
-        all:
-          pullPolicy: IfNotPresent
-          registry: dp.apps.rancher.io
-          repository: containers/milvus
-          tag: 2.6.18-8.4
-      etcd:
-        enabled: true
-        replicaCount: 1
-      kafka:
-        enabled: false
-      minio:
-        enabled: true
-        mode: standalone
-        name: minio
-        replicas: 1
-        rootPath: file
-        users:
-        - accessKey: minioadmin
-          policy: consoleAdmin
-          secretKey: minioadmin
-      proxy:
-        enabled: true
-        http:
-          enabled: true
-      standalone:
-        messageQueue: woodpecker
-        persistence:
-          enabled: true
-          persistentVolumeClaim:
-            accessModes: ReadWriteOnce
-            size: 50Gi
-      streaming:
-        enabled: true
-        woodpecker:
-          embedded: true
-          storage:
-            type: minio
+      fullnameOverride: qdrant
+      persistence:
+        accessModes: ["ReadWriteOnce"]
+        size: 5Gi
       service:
-        port: 19530
-        portName: milvus
         type: ClusterIP

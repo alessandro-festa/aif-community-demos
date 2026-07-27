@@ -2,15 +2,15 @@
 Shared helpers for the Insurance Support Copilot DAGs.
 
 The DAGs generate a synthetic insurance support dataset into PostgreSQL, embed the
-ticket text into Milvus (semantic "similar case" index), and (Ollama variant) create
+ticket text into Qdrant (semantic "similar case" index), and (Ollama variant) create
 a customized support-agent persona model. Everything talks to Postgres via psycopg2
-and to the embedding endpoint + Milvus over plain HTTP (`requests`) — all present in
+and to the embedding endpoint + Qdrant over plain HTTP (`requests`) — all present in
 the STOCK AppCo Airflow image (psycopg2 ships for Airflow's own Postgres metadata),
 so no custom image is needed. Synthetic data is generated with the stdlib only.
 
 Config (env, injected by the apache-airflow component):
   POSTGRES_URI     postgresql://insurance:insurance@support-db:5432/insurance
-  MILVUS_URI       http://milvus:19530                 Milvus proxy REST v2 API
+  QDRANT_URL       http://qdrant:6333                  Qdrant REST API
   EMBED_BASE_URL   http://ollama:11434/v1              OpenAI-compatible /embeddings
   EMBED_MODEL      nomic-embed-text
   CHAT_BASE_URL    http://ollama:11434/v1              OpenAI-compatible chat (persona base)
@@ -28,8 +28,8 @@ import psycopg2.extras
 import requests
 
 POSTGRES_URI = os.environ.get("POSTGRES_URI", "postgresql://insurance:insurance@support-db:5432/insurance")
-MILVUS_URI = os.environ.get("MILVUS_URI", "http://milvus:19530").rstrip("/")
-MILVUS_TOKEN = os.environ.get("MILVUS_TOKEN", "")
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333").rstrip("/")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 EMBED_BASE_URL = os.environ.get("EMBED_BASE_URL", "http://ollama:11434/v1").rstrip("/")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 CHAT_BASE_URL = os.environ.get("CHAT_BASE_URL", "http://ollama:11434/v1").rstrip("/")
@@ -115,71 +115,49 @@ def ollama_tags() -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Milvus (REST v2 API via the proxy — requests only)
+# Qdrant (plain REST API — requests only)
 # --------------------------------------------------------------------------- #
-def _milvus_headers() -> dict:
+def _qdrant_headers() -> dict:
     h = {"Content-Type": "application/json"}
-    if MILVUS_TOKEN:
-        h["Authorization"] = f"Bearer {MILVUS_TOKEN}"
+    if QDRANT_API_KEY:
+        h["api-key"] = QDRANT_API_KEY
     return h
 
 
-def _milvus_post(path: str, body: dict) -> dict:
-    r = requests.post(f"{MILVUS_URI}{path}", json=body, headers=_milvus_headers(), timeout=HTTP_TIMEOUT)
+def qdrant_has_collection(name: str = CASES_COLLECTION) -> bool:
+    r = requests.get(f"{QDRANT_URL}/collections/{name}", headers=_qdrant_headers(), timeout=HTTP_TIMEOUT)
+    return r.status_code == 200
+
+
+def qdrant_drop_collection(name: str = CASES_COLLECTION) -> None:
+    if qdrant_has_collection(name):
+        r = requests.delete(f"{QDRANT_URL}/collections/{name}", headers=_qdrant_headers(), timeout=HTTP_TIMEOUT)
+        r.raise_for_status()
+
+
+def qdrant_create_collection(dim: int, name: str = CASES_COLLECTION) -> None:
+    """Create the support-cases collection: a COSINE vector. Qdrant collections are
+    schemaless for payload data, so the filterable metadata (ticket_id, subject, body,
+    accident_type, product_type, status, was_paid, within_policy, resolution) simply
+    rides along in each point's payload — no field/type declarations needed."""
+    r = requests.put(
+        f"{QDRANT_URL}/collections/{name}",
+        json={"vectors": {"size": dim, "distance": "Cosine"}},
+        headers=_qdrant_headers(), timeout=HTTP_TIMEOUT,
+    )
     r.raise_for_status()
-    data = r.json()
-    if isinstance(data, dict) and data.get("code") not in (0, None):
-        raise RuntimeError(f"Milvus error on {path}: {data}")
-    return data
 
 
-def milvus_has_collection(name: str = CASES_COLLECTION) -> bool:
-    return name in (_milvus_post("/v2/vectordb/collections/list", {}).get("data") or [])
-
-
-def milvus_drop_collection(name: str = CASES_COLLECTION) -> None:
-    if milvus_has_collection(name):
-        _milvus_post("/v2/vectordb/collections/drop", {"collectionName": name})
-
-
-def milvus_create_collection(dim: int, name: str = CASES_COLLECTION) -> None:
-    """Create the support-cases collection: a COSINE vector + filterable metadata."""
-    body = {
-        "collectionName": name,
-        "schema": {
-            "autoID": False,
-            "enableDynamicField": True,
-            "fields": [
-                {"fieldName": "id", "dataType": "Int64", "isPrimary": True},
-                {"fieldName": "vector", "dataType": "FloatVector",
-                 "elementTypeParams": {"dim": dim}},
-                {"fieldName": "ticket_id", "dataType": "Int64"},
-                {"fieldName": "subject", "dataType": "VarChar",
-                 "elementTypeParams": {"max_length": 512}},
-                {"fieldName": "body", "dataType": "VarChar",
-                 "elementTypeParams": {"max_length": 8192}},
-                {"fieldName": "accident_type", "dataType": "VarChar",
-                 "elementTypeParams": {"max_length": 64}},
-                {"fieldName": "product_type", "dataType": "VarChar",
-                 "elementTypeParams": {"max_length": 32}},
-                {"fieldName": "status", "dataType": "VarChar",
-                 "elementTypeParams": {"max_length": 32}},
-                {"fieldName": "was_paid", "dataType": "Int64"},
-                {"fieldName": "within_policy", "dataType": "Int64"},
-                {"fieldName": "resolution", "dataType": "VarChar",
-                 "elementTypeParams": {"max_length": 4096}},
-            ],
-        },
-        "indexParams": [
-            {"fieldName": "vector", "metricType": "COSINE",
-             "indexName": "vector_index", "indexType": "AUTOINDEX"}
-        ],
-    }
-    _milvus_post("/v2/vectordb/collections/create", body)
-
-
-def milvus_insert(rows: list[dict], name: str = CASES_COLLECTION) -> None:
+def qdrant_insert(rows: list[dict], name: str = CASES_COLLECTION) -> None:
     batch = 100
     for i in range(0, len(rows), batch):
-        _milvus_post("/v2/vectordb/entities/insert",
-                     {"collectionName": name, "data": rows[i:i + batch]})
+        points = [
+            {"id": row["id"], "vector": row["vector"],
+             "payload": {k: v for k, v in row.items() if k not in ("id", "vector")}}
+            for row in rows[i:i + batch]
+        ]
+        r = requests.put(
+            f"{QDRANT_URL}/collections/{name}/points",
+            json={"points": points}, headers=_qdrant_headers(), timeout=HTTP_TIMEOUT,
+        )
+        r.raise_for_status()

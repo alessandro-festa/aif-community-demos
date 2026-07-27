@@ -1,5 +1,5 @@
 // Astra — Airflow GenAI RAG demo UI.
-// Talks to the FastAPI backend (app/main.py), which proxies Ollama + Milvus.
+// Talks to the FastAPI backend (app/main.py), which proxies Ollama + Qdrant.
 
 const $ = (id) => document.getElementById(id);
 
@@ -16,7 +16,7 @@ async function loadHealth() {
     const h = await r.json();
     const ok = (b) => (b ? "✓" : "✗");
     $("health").textContent =
-      `Ollama ${ok(h.ollama)} · Milvus ${ok(h.milvus)} · collection "${h.collection}" ${ok(h.collection_ready)}`;
+      `Ollama ${ok(h.ollama)} · Qdrant ${ok(h.qdrant)} · collection "${h.collection}" ${ok(h.collection_ready)}`;
   } catch (e) {
     $("health").textContent = "Backend unreachable: " + e;
   }

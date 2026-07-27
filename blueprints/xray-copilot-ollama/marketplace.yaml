@@ -2,11 +2,11 @@ id: xray-copilot-ollama
 displayName: Chest X-ray Copilot (Ollama, CPU)
 description: >-
   Upload a chest X-ray and get an analysis from a medical vision-language model
-  (MedGemma) served by Ollama on CPU, then search a Milvus index of X-rays by image
+  (MedGemma) served by Ollama on CPU, then search a Qdrant index of X-rays by image
   (similarity) or by text (semantic) using BiomedCLIP embeddings. No HuggingFace
   token needed. Demo only — not for clinical use.
 category: healthcare
-tags: [healthcare, xray, medgemma, ollama, biomedclip, milvus, cpu, vision]
+tags: [healthcare, xray, medgemma, ollama, biomedclip, qdrant, cpu, vision]
 blueprintFile: xray-copilot-ollama-1-0-0.yaml
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
@@ -27,12 +27,12 @@ localFrontend:
     OPENAI_BASE_URL: "http://localhost:11434/v1"
     OPENAI_API_KEY: "EMPTY"
     DEFAULT_MODEL: "{{MODEL}}"
-    MILVUS_URI: "http://localhost:19530"
+    QDRANT_URL: "http://localhost:6333"
     CLIP_MODEL: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
     IMG_COLLECTION: "xray_embeddings"
   portForwards:
     - {name: ollama, service: ollama, local: 11434, remote: 11434}
-    - {name: milvus, service: milvus, local: 19530, remote: 19530}
+    - {name: qdrant, service: qdrant, local: 6333, remote: 6333}
 # MedGemma quantization (same 4B medical VLM) — smaller quant = faster on CPU.
 modelSizes:
   default: small
@@ -52,20 +52,20 @@ guide:
     body: |
       In the SUSE AI Factory UI, go to **Blueprints → Chest X-ray Copilot (Ollama,
       CPU) → Create AIWorkload**, choose a target **namespace**, and deploy. Ollama
-      pulls `alibayram/medgemma` on first start; wait until Ollama and Milvus are
+      pulls `alibayram/medgemma` on first start; wait until Ollama and Qdrant are
       Ready. Enter the namespace you chose below.
     action: {type: namespace-input}
   - title: Launch the demo UI
     body: |
-      Starts `kubectl port-forward` to Ollama (`ollama:11434`) and Milvus
-      (`milvus:19530`), then runs the Chest X-ray Copilot UI locally.
+      Starts `kubectl port-forward` to Ollama (`ollama:11434`) and Qdrant
+      (`qdrant:6333`), then runs the Chest X-ray Copilot UI locally.
     action: {type: start-frontend}
   - title: Analyse an X-ray & search
     body: |
       Open the UI, pick a bundled **sample X-ray** (normal / lobar pneumonia /
       congestive heart failure) or upload your own, and hit **Analyse** (CPU
       inference is slow — give it a moment). Each analysed image is embedded with
-      BiomedCLIP and indexed in Milvus, so **Find similar X-rays** and the semantic
+      BiomedCLIP and indexed in Qdrant, so **Find similar X-rays** and the semantic
       search box start returning results once you've analysed a few.
 
       > The model (`dcarrascosa/medgemma-1.5-4b-it:Q4_K_M`) is a vision-capable

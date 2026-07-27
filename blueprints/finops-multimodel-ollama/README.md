@@ -6,7 +6,7 @@ workload and reconciles the two cost planes every AI platform has:
 
 ```
                            ┌─ per-model pricing (input/output $ per token)
-custom chat UI (local) ─► LiteLLM ──guardrails──► Ollama (llama3.2:1b · qwen2.5:1.5b · qwen2.5:3b)
+custom chat UI (local) ─► LiteLLM ──guardrails──► Ollama (qwen2.5:0.5b · qwen3.5:0.8b · llama3.2:1b)
 Airflow traffic DAG ───┘      │  └─ Presidio (PII), hide-secrets, prompt-injection
   (per-team virtual keys)     └─ spend logs → LiteLLM Postgres
                                         │
@@ -51,14 +51,14 @@ Airflow backfill DAG ─► remote-write (backdated samples) ──────�
 
 ## The models & pricing
 
-Three CPU models at deliberately different **per-token prices** so the FinOps story
-has variety (same tokens cost ~8× more on the 3B than the 1B):
+Three tiny CPU models (max speed) at deliberately different **per-token prices** so
+the FinOps story has variety (same tokens cost ~8× more on the 1B than the 0.5B):
 
 | Model name (LiteLLM) | Ollama model | input $/1M | output $/1M |
 |----------------------|--------------|-----------:|------------:|
-| `llama-3.2-1b`  | `llama3.2:1b`  | 0.10 | 0.20 |
-| `qwen-2.5-1.5b` | `qwen2.5:1.5b` | 0.30 | 0.60 |
-| `qwen-2.5-3b`   | `qwen2.5:3b`   | 0.80 | 1.60 |
+| `qwen-2.5-0.5b` | `qwen2.5:0.5b` | 0.10 | 0.20 |
+| `qwen-3.5-0.8b` | `qwen3.5:0.8b` | 0.30 | 0.60 |
+| `llama-3.2-1b`  | `llama3.2:1b`  | 0.80 | 1.60 |
 
 ## The guardrail wizard
 

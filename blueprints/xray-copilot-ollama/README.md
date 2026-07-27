@@ -2,7 +2,7 @@
 
 The CPU variant of the Chest X-ray Copilot demo. Upload a chest X-ray, get an
 analysis from a medical vision-language model served by **Ollama**, and search a
-Milvus index of X-rays by **image** (similarity) or **text** (semantic) using
+Qdrant index of X-rays by **image** (similarity) or **text** (semantic) using
 **BiomedCLIP** embeddings.
 
 > ⚠️ **Demo only — not a medical device and not for clinical decision-making.**
@@ -18,8 +18,8 @@ Milvus index of X-rays by **image** (similarity) or **text** (semantic) using
 ```
 Local UI (upload/pick X-ray)
    ├── analysis:  image → Ollama (MedGemma) over OpenAI /v1/chat/completions
-   └── search:    image → BiomedCLIP embedding (CPU, in UI) → Milvus
-                  text  → BiomedCLIP text embedding        → Milvus  (shared space)
+   └── search:    image → BiomedCLIP embedding (CPU, in UI) → Qdrant
+                  text  → BiomedCLIP text embedding        → Qdrant  (shared space)
 ```
 
 ## Components
@@ -27,7 +27,7 @@ Local UI (upload/pick X-ray)
 | Component | Chart (repo) | Notes |
 |---|---|---|
 | Ollama | `ollama` (application-collection) | CPU; serves the model at `ollama:11434`. |
-| Milvus | `milvus` (application-collection) | Standalone + REST v2 proxy at `milvus:19530`. |
+| Qdrant | `qdrant` (suse-ai-registry) | REST vector DB at `qdrant:6333`. |
 
 BiomedCLIP (MIT, 512-dim) runs in the local UI on CPU — no embedding component in
 the cluster.
@@ -52,7 +52,7 @@ CPU inference is slow; the model is downloaded on first start.
 - SUSE AI Factory operator; `application-collection` ClusterRepo (+ credentials);
   a default StorageClass; cert-manager.
 - Host tools for the local UI: `python3` (the marketplace builds a venv and installs
-  a CPU-only torch + open_clip + pymilvus).
+  a CPU-only torch + open_clip; the app talks to Qdrant over its REST API).
 
 ## Sample X-rays
 

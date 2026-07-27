@@ -11,7 +11,7 @@ metadata:
 # is detected BEFORE anything reaches the model.
 #
 # Components (registry sources):
-#   * ollama      — application-collection (dp.apps.rancher.io), CPU, llama3.2:1b
+#   * ollama      — application-collection (dp.apps.rancher.io), CPU, qwen2.5:0.5b
 #   * litellm     — suse-ai-registry (registry.suse.com/ai/charts), image
 #                   registry.suse.com/ai/containers/litellm-database (needs the
 #                   application-collection pull secret). Bundled standalone Postgres.
@@ -31,7 +31,7 @@ spec:
   description: |
     A guarded LLM gateway: Open WebUI talks to a LiteLLM proxy which applies
     guardrails (Presidio PII masking/blocking, secret redaction, prompt-injection
-    detection) and forwards to a local Ollama model (llama3.2:1b, CPU). All chat
+    detection) and forwards to a local Ollama model (qwen2.5:0.5b, CPU). All chat
     goes through LiteLLM, so guardrails are enforced before the model sees anything.
 
     LiteLLM comes from the SUSE AI registry (registry.suse.com/ai); its image is
@@ -71,9 +71,9 @@ spec:
           # A small, CPU-friendly chat model — the demo is about the guardrails,
           # not the model.
           pull:
-          - llama3.2:1b
+          - qwen2.5:0.5b
           run:
-          - llama3.2:1b
+          - qwen2.5:0.5b
         port: 11434
       persistentVolume:
         enabled: true
@@ -140,9 +140,9 @@ spec:
         litellm_settings:
           drop_params: true
         model_list:
-        - model_name: llama-3.2-1b
+        - model_name: qwen2.5-0.5b
           litellm_params:
-            model: ollama_chat/llama3.2:1b
+            model: ollama_chat/qwen2.5:0.5b
             api_base: http://ollama:11434
         # Baseline: no guardrails. The marketplace wizard appends entries here
         # (Presidio PII mask/block, hide-secrets) and callbacks under
@@ -281,7 +281,7 @@ spec:
       - name: OPENAI_API_KEYS
         value: sk-guardrails-demo
       - name: DEFAULT_MODELS
-        value: llama-3.2-1b
+        value: qwen2.5-0.5b
       ingress:
         enabled: false
       persistence:

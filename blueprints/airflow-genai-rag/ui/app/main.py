@@ -5,11 +5,11 @@ A small FastAPI app that mirrors the suse-vss UI style. It performs RAG generati
 against the same in-cluster services the Airflow pipeline populates:
 
     embed the topic (Ollama nomic-embed-text)
-      -> search Milvus `kb` for the closest chunks
+      -> search Qdrant `kb` for the closest chunks
       -> build a grounded prompt
       -> generate a post (Ollama, default the customized `astra-custom` model)
 
-Run locally (with `kubectl port-forward` to ollama:11434 and milvus:19530):
+Run locally (with `kubectl port-forward` to ollama:11434 and qdrant:6333):
 
     pip install -r requirements.txt
     uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -17,11 +17,11 @@ Run locally (with `kubectl port-forward` to ollama:11434 and milvus:19530):
 
 Configuration (env):
     OLLAMA_BASE_URL  default http://localhost:11434
-    MILVUS_URI       default http://localhost:19530
+    QDRANT_URL       default http://localhost:6333
     EMBED_MODEL      default nomic-embed-text
     GEN_MODEL        default astra-custom
     KB_COLLECTION    default kb
-    MILVUS_TOKEN     optional "user:password" bearer token
+    QDRANT_API_KEY   optional Qdrant API key
 """
 from __future__ import annotations
 
@@ -35,11 +35,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-MILVUS_URI = os.environ.get("MILVUS_URI", "http://localhost:19530").rstrip("/")
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333").rstrip("/")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 GEN_MODEL = os.environ.get("GEN_MODEL", "astra-custom")
 KB_COLLECTION = os.environ.get("KB_COLLECTION", "kb")
-MILVUS_TOKEN = os.environ.get("MILVUS_TOKEN", "")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 
 HTTP_TIMEOUT = 120
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -48,7 +48,7 @@ app = FastAPI(title="Astra — Airflow GenAI RAG")
 
 
 # --------------------------------------------------------------------------- #
-# Ollama + Milvus helpers (same HTTP contracts as the DAGs)
+# Ollama + Qdrant helpers (same HTTP contracts as the DAGs)
 # --------------------------------------------------------------------------- #
 def ollama_embed(text: str) -> list[float]:
     r = requests.post(
@@ -73,45 +73,41 @@ def ollama_generate(model: str, prompt: str) -> str:
     return (r.json().get("response") or "").strip()
 
 
-def _milvus_headers() -> dict:
+def _qdrant_headers() -> dict:
     h = {"Content-Type": "application/json"}
-    if MILVUS_TOKEN:
-        h["Authorization"] = f"Bearer {MILVUS_TOKEN}"
+    if QDRANT_API_KEY:
+        h["api-key"] = QDRANT_API_KEY
     return h
 
 
-def _milvus_post(path: str, body: dict) -> dict:
-    r = requests.post(
-        f"{MILVUS_URI}{path}", json=body, headers=_milvus_headers(), timeout=HTTP_TIMEOUT
-    )
-    r.raise_for_status()
-    data = r.json()
-    if isinstance(data, dict) and data.get("code") not in (0, None):
-        raise RuntimeError(f"Milvus error on {path}: {data}")
-    return data
-
-
-def milvus_status() -> tuple[bool, bool]:
+def qdrant_status() -> tuple[bool, bool]:
     """Return (reachable, has_kb_collection) so callers can distinguish a broken
     port-forward from a genuinely missing collection."""
     try:
-        data = _milvus_post("/v2/vectordb/collections/list", {})
-        return True, KB_COLLECTION in (data.get("data") or [])
+        r = requests.get(
+            f"{QDRANT_URL}/collections/{KB_COLLECTION}",
+            headers=_qdrant_headers(),
+            timeout=HTTP_TIMEOUT,
+        )
+        if r.status_code == 404:
+            return True, False
+        r.raise_for_status()
+        return True, True
     except Exception:
         return False, False
 
 
-def milvus_collection_ready() -> bool:
-    return milvus_status()[1]
+def qdrant_collection_ready() -> bool:
+    return qdrant_status()[1]
 
 
-def _require_milvus_collection() -> None:
-    """Raise a precise HTTP error if Milvus is unreachable or kb is missing."""
-    reachable, has_kb = milvus_status()
+def _require_qdrant_collection() -> None:
+    """Raise a precise HTTP error if Qdrant is unreachable or kb is missing."""
+    reachable, has_kb = qdrant_status()
     if not reachable:
         raise HTTPException(
             502,
-            f"Milvus unreachable at {MILVUS_URI} — is the port-forward up? "
+            f"Qdrant unreachable at {QDRANT_URL} — is the port-forward up? "
             "(In the marketplace guide, Stop and re-Start the demo UI.)",
         )
     if not has_kb:
@@ -120,26 +116,24 @@ def _require_milvus_collection() -> None:
         )
 
 
-def milvus_search(vector: list[float], top_k: int) -> list[dict]:
-    data = _milvus_post(
-        "/v2/vectordb/entities/search",
-        {
-            "collectionName": KB_COLLECTION,
-            "data": [vector],
-            "limit": top_k,
-            "outputFields": ["text", "title", "source"],
-            "searchParams": {"metricType": "COSINE"},
-        },
+def qdrant_search(vector: list[float], top_k: int) -> list[dict]:
+    r = requests.post(
+        f"{QDRANT_URL}/collections/{KB_COLLECTION}/points/search",
+        json={"vector": vector, "limit": top_k, "with_payload": True},
+        headers=_qdrant_headers(),
+        timeout=HTTP_TIMEOUT,
     )
-    hits = data.get("data") or []
+    r.raise_for_status()
+    hits = r.json().get("result") or []
     out = []
     for h in hits:
+        payload = h.get("payload") or {}
         out.append(
             {
-                "title": h.get("title", ""),
-                "source": h.get("source", ""),
-                "text": h.get("text", ""),
-                "score": h.get("distance", h.get("score", 0.0)),
+                "title": payload.get("title", ""),
+                "source": payload.get("source", ""),
+                "text": payload.get("text", ""),
+                "score": h.get("score", 0.0),
             }
         )
     return out
@@ -165,22 +159,18 @@ class SearchReq(BaseModel):
 @app.get("/api/health")
 def health():
     ollama_ok = False
-    milvus_ok = False
+    qdrant_ok = False
     try:
         requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=10).raise_for_status()
         ollama_ok = True
     except Exception:
         pass
-    try:
-        _milvus_post("/v2/vectordb/collections/list", {})
-        milvus_ok = True
-    except Exception:
-        pass
+    qdrant_ok = qdrant_status()[0]
     return {
         "ollama": ollama_ok,
-        "milvus": milvus_ok,
+        "qdrant": qdrant_ok,
         "collection": KB_COLLECTION,
-        "collection_ready": milvus_collection_ready(),
+        "collection_ready": qdrant_collection_ready(),
     }
 
 
@@ -197,10 +187,10 @@ def models():
 
 @app.post("/api/search")
 def search(req: SearchReq):
-    _require_milvus_collection()
+    _require_qdrant_collection()
     try:
         vector = ollama_embed(req.query)
-        return {"sources": milvus_search(vector, req.top_k)}
+        return {"sources": qdrant_search(vector, req.top_k)}
     except HTTPException:
         raise
     except Exception as e:
@@ -211,11 +201,11 @@ def search(req: SearchReq):
 def generate(req: GenerateReq):
     if not req.topic.strip():
         raise HTTPException(400, "topic is required")
-    _require_milvus_collection()
+    _require_qdrant_collection()
     model = (req.model or GEN_MODEL).strip()
     try:
         vector = ollama_embed(req.topic)
-        sources = milvus_search(vector, req.top_k)
+        sources = qdrant_search(vector, req.top_k)
         context = "\n\n".join(
             f"[{i + 1}] {s['title']} ({s['source']}): {s['text']}"
             for i, s in enumerate(sources)

@@ -120,8 +120,8 @@ async function analyze() {
     const a = $("analysis"); a.classList.remove("muted");
     a.innerHTML = mdToHtml(d.analysis);
     $("store-status").textContent = d.stored
-      ? `Indexed in Milvus (model: ${d.model}). You can now search for similar X-rays.`
-      : `Analysis done (model: ${d.model}). Not indexed — Milvus/embeddings unavailable.`;
+      ? `Indexed in Qdrant (model: ${d.model}). You can now search for similar X-rays.`
+      : `Analysis done (model: ${d.model}). Not indexed — Qdrant/embeddings unavailable.`;
     $("find-similar").hidden = !d.stored;
   } catch (e) {
     err.textContent = String(e.message || e);

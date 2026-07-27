@@ -7,10 +7,10 @@ metadata:
   name: insurance-support-ollama-1-0-0
 # Insurance Customer-Support Copilot (Ollama, CPU).
 # Airflow generates a SYNTHETIC insurance support dataset (customers/families/policies/
-# claims/tickets) into PostgreSQL and embeds the tickets into Milvus; a local SUSE chat
+# claims/tickets) into PostgreSQL and embeds the tickets into Qdrant; a local SUSE chat
 # UI lets a customer upload an accident photo, chat with a support-agent persona, open/
 # close tickets, and see SIMILAR past cases — redacted (PII removed) with Presidio.
-# Ollama serves qwen2.5:3b (chat + open/close-ticket tool-calling), qwen2.5vl:3b
+# Ollama serves qwen2.5:0.5b (chat + open/close-ticket tool-calling), qwen2.5vl:3b
 # (accident-photo vision), and nomic-embed-text (semantic index) — all <4B for CPU.
 # All components from the SUSE Application Collection. DEMO ONLY — synthetic data.
 spec:
@@ -21,17 +21,17 @@ spec:
     A customer-support automation demo for an insurance company. Apache Airflow
     generates a synthetic support dataset — customers with family relationships,
     policies, accident types, claims (with derived paid / within-policy decisions),
-    and support tickets — into PostgreSQL, then embeds the tickets into Milvus for
+    and support tickets — into PostgreSQL, then embeds the tickets into Qdrant for
     semantic "similar case" search. A local SUSE-styled chat UI lets a customer
     upload an accident photo, describe the issue, open or close support tickets
     (the assistant proposes the action, the user confirms), and see similar past
     cases — every retrieved case is REDACTED with Presidio before display so one
     customer never sees another's personal data.
 
-    Ollama serves qwen2.5:3b (chat + tool-calling for open/close ticket), qwen2.5vl:3b
+    Ollama serves qwen2.5:0.5b (chat + tool-calling for open/close ticket), qwen2.5vl:3b
     (accident-photo captioning), and nomic-embed-text (semantic index); CLIP image
     similarity runs on CPU in the local UI. The Airflow `customize_model` DAG creates a
-    `support-agent` persona model from the tool-capable qwen2.5:3b.
+    `support-agent` persona model from the tool-capable qwen2.5:0.5b.
 
     Prerequisites: the SUSE AI Factory operator, the application-collection ClusterRepo
     (+ credentials secret), a default StorageClass, and cert-manager. After importing,
@@ -60,58 +60,20 @@ spec:
           enabled: true
           size: 8Gi
   # ----------------------------------------------------------------------- #
-  # Milvus — semantic "similar case" index (standalone + REST v2 proxy).
+  # Qdrant — semantic "similar case" index (lightweight vector DB, REST on 6333).
   # ----------------------------------------------------------------------- #
-  - chartName: milvus
-    chartRepo: application-collection
-    chartVersion: 5.0.22
+  - chartName: qdrant
+    chartRepo: suse-ai-registry
+    chartVersion: 1.17.0
     values:
-      cluster:
-        enabled: false
-      image:
-        all:
-          pullPolicy: IfNotPresent
-          registry: dp.apps.rancher.io
-          repository: containers/milvus
-          tag: 2.6.18-8.4
-      etcd:
-        enabled: true
-        replicaCount: 1
-      kafka:
-        enabled: false
-      minio:
-        enabled: true
-        mode: standalone
-        name: minio
-        replicas: 1
-        rootPath: file
-        users:
-        - accessKey: minioadmin
-          policy: consoleAdmin
-          secretKey: minioadmin
-      proxy:
-        enabled: true
-        http:
-          enabled: true
-      standalone:
-        messageQueue: woodpecker
-        persistence:
-          enabled: true
-          persistentVolumeClaim:
-            accessModes: ReadWriteOnce
-            size: 50Gi
-      streaming:
-        enabled: true
-        woodpecker:
-          embedded: true
-          storage:
-            type: minio
+      fullnameOverride: qdrant
+      persistence:
+        accessModes: ["ReadWriteOnce"]
+        size: 5Gi
       service:
-        port: 19530
-        portName: milvus
         type: ClusterIP
   # ----------------------------------------------------------------------- #
-  # Ollama — chat+tools (qwen2.5:3b), photo vision (qwen2.5vl:3b), embeddings
+  # Ollama — chat+tools (qwen2.5:0.5b), photo vision (qwen2.5vl:3b), embeddings
   # (nomic-embed-text), CPU.
   # ----------------------------------------------------------------------- #
   - chartName: ollama
@@ -184,8 +146,8 @@ spec:
       env:
       - name: POSTGRES_URI
         value: postgresql://insurance:insurance@support-db:5432/insurance
-      - name: MILVUS_URI
-        value: http://milvus:19530
+      - name: QDRANT_URL
+        value: http://qdrant:6333
       - name: EMBED_BASE_URL
         value: http://ollama:11434/v1
       - name: EMBED_MODEL

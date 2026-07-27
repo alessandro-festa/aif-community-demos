@@ -8,7 +8,7 @@ metadata:
 # Fraud / AML detection (vLLM, GPU).
 # Same pipeline as the Ollama variant — Airflow generates a synthetic fraud graph
 # (SantanderAI/gen-fraud-graph, Apache-2.0), loads PostgreSQL, trains XGBoost, indexes
-# Milvus for anomaly detection — but the AML-analyst LLM is served by vLLM on a GPU
+# Qdrant for anomaly detection — but the AML-analyst LLM is served by vLLM on a GPU
 # (Qwen/Qwen2.5-3B-Instruct). Requires a real NVIDIA GPU node + the GPU Operator.
 #
 # Inspired by and with thanks to:
@@ -22,7 +22,7 @@ spec:
     Financial-crime / money-laundering / anomaly-detection pipeline. Apache Airflow
     generates and manipulates a synthetic fraud graph (SantanderAI/gen-fraud-graph,
     Apache-2.0), stores it in PostgreSQL, trains an XGBoost classifier on the labelled data,
-    and indexes per-account behavioural feature vectors in Milvus for anomaly detection. A
+    and indexes per-account behavioural feature vectors in Qdrant for anomaly detection. A
     local SUSE-styled investigator UI uses an LLM served by vLLM (Qwen/Qwen2.5-3B-Instruct)
     as an AML analyst to classify + explain flagged cases.
 
@@ -53,53 +53,18 @@ spec:
         persistence:
           enabled: true
           size: 8Gi
-  - chartName: milvus
-    chartRepo: application-collection
-    chartVersion: 5.0.22
+  # ----------------------------------------------------------------------- #
+  # Qdrant — per-account behavioural feature vectors for anomaly detection.
+  # ----------------------------------------------------------------------- #
+  - chartName: qdrant
+    chartRepo: suse-ai-registry
+    chartVersion: 1.17.0
     values:
-      cluster:
-        enabled: false
-      image:
-        all:
-          pullPolicy: IfNotPresent
-          registry: dp.apps.rancher.io
-          repository: containers/milvus
-          tag: 2.6.18-8.4
-      etcd:
-        enabled: true
-        replicaCount: 1
-      kafka:
-        enabled: false
-      minio:
-        enabled: true
-        mode: standalone
-        name: minio
-        replicas: 1
-        rootPath: file
-        users:
-        - accessKey: minioadmin
-          policy: consoleAdmin
-          secretKey: minioadmin
-      proxy:
-        enabled: true
-        http:
-          enabled: true
-      standalone:
-        messageQueue: woodpecker
-        persistence:
-          enabled: true
-          persistentVolumeClaim:
-            accessModes: ReadWriteOnce
-            size: 50Gi
-      streaming:
-        enabled: true
-        woodpecker:
-          embedded: true
-          storage:
-            type: minio
+      fullnameOverride: qdrant
+      persistence:
+        accessModes: ["ReadWriteOnce"]
+        size: 5Gi
       service:
-        port: 19530
-        portName: milvus
         type: ClusterIP
   # ----------------------------------------------------------------------- #
   # vLLM — local LLM (AML analyst) served on an NVIDIA GPU.
@@ -170,8 +135,8 @@ spec:
       env:
       - name: POSTGRES_URI
         value: postgresql://fraud:fraud@fraud-db:5432/fraud
-      - name: MILVUS_URI
-        value: http://milvus:19530
+      - name: QDRANT_URL
+        value: http://qdrant:6333
       - name: SCALE_FACTOR
         value: "0.001"
       ingress:

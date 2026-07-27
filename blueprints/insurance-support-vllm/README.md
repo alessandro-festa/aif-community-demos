@@ -18,11 +18,11 @@ accident-photo vision is served by **Qwen2.5-VL-7B on vLLM**.
 
 ```
 Airflow ─ generate_dataset → Postgres (customers/families/policies/claims/tickets)
-        └ index_cases      → embed tickets (Ollama nomic-embed) → Milvus support_cases
+        └ index_cases      → embed tickets (Ollama nomic-embed) → Qdrant support_cases
 
 Local chat UI ─ chat + accident photo → vLLM Qwen2.5-VL-7B (chat + vision)
-   ├ semantic search : text  → nomic-embed → Milvus → redact (Presidio) → show
-   ├ similarity      : photo → CLIP        → Milvus → redact → show
+   ├ semantic search : text  → nomic-embed → Qdrant → redact (Presidio) → show
+   ├ similarity      : photo → CLIP        → Qdrant → redact → show
    ├ open/close ticket: model proposes → you confirm → Postgres write
    └ browse recent tickets
 ```
@@ -32,7 +32,7 @@ Local chat UI ─ chat + accident photo → vLLM Qwen2.5-VL-7B (chat + vision)
 | Component | Chart (repo) | Notes |
 |---|---|---|
 | PostgreSQL | `postgresql` (application-collection) | `support-db:5432`. |
-| Milvus | `milvus` (application-collection) | Standalone + REST v2 at `milvus:19530`. |
+| Qdrant | `qdrant` (suse-ai-registry) | Lightweight vector DB, REST at `qdrant:6333`. |
 | vLLM | `vllm` (application-collection) | **GPU**; `Qwen/Qwen2.5-VL-7B-Instruct` behind `vllm-router-service:80`. |
 | Ollama | `ollama` (application-collection) | CPU; `nomic-embed-text` for embeddings only. |
 | Apache Airflow | `apache-airflow` (application-collection) | Custom image (Faker + psycopg2); DAGs via git-sync. |
@@ -50,7 +50,7 @@ on the vLLM chart serving an embedding model), a small **CPU** Ollama serves
 ## Airflow DAGs
 
 1. **generate_dataset** — Faker synthetic insurance data → Postgres (size via `N_TICKETS`).
-2. **index_cases** — embeds resolved/closed tickets → Milvus `support_cases`.
+2. **index_cases** — embeds resolved/closed tickets → Qdrant `support_cases`.
 
 ## Airflow image
 

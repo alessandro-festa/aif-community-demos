@@ -32,7 +32,7 @@ EXPOSE 8000
 ENV OPENAI_BASE_URL=http://vllm-router-service:80/v1 \
     OPENAI_API_KEY=EMPTY \
     DEFAULT_MODEL=chaoyinshe/llava-med-v1.5-mistral-7b-hf \
-    MILVUS_URI=http://milvus:19530 \
+    QDRANT_URL=http://qdrant:6333 \
     CLIP_MODEL=hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224 \
     IMG_COLLECTION=xray_embeddings
 

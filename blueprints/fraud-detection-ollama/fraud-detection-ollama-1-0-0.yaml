@@ -8,8 +8,8 @@ metadata:
 # Fraud / AML detection (Ollama, CPU).
 # Airflow generates a synthetic fraud graph (SantanderAI/gen-fraud-graph, Apache-2.0),
 # loads it into PostgreSQL, engineers graph/behavioural features, trains an XGBoost
-# classifier, and pushes per-account feature vectors into Milvus for anomaly detection.
-# A local SUSE UI reads the results and uses a local LLM (Ollama, qwen2.5:1.5b) as an AML
+# classifier, and pushes per-account feature vectors into Qdrant for anomaly detection.
+# A local SUSE UI reads the results and uses a local LLM (Ollama, qwen2.5:0.5b) as an AML
 # analyst to explain flagged cases. All components from the SUSE Application Collection.
 #
 # Inspired by and with thanks to:
@@ -25,9 +25,9 @@ spec:
     generates and manipulates a synthetic fraud graph (accounts + transactions with
     injected laundering rings — SantanderAI/gen-fraud-graph, Apache-2.0), stores it in
     PostgreSQL, trains an XGBoost classifier on the labelled data, and indexes per-account
-    behavioural feature vectors in Milvus for anomaly detection. A local SUSE-styled
+    behavioural feature vectors in Qdrant for anomaly detection. A local SUSE-styled
     investigator UI shows dataset stats, model metrics and flagged accounts, and uses a
-    local LLM (Ollama, qwen2.5:1.5b) as an AML analyst to classify + explain flagged cases.
+    local LLM (Ollama, qwen2.5:0.5b) as an AML analyst to classify + explain flagged cases.
 
     Thanks to SantanderAI/gen-fraud-graph (https://github.com/SantanderAI/gen-fraud-graph)
     for inspiring this blueprint, and to srinivas-gajulaa/genai-fraud-detection for the
@@ -61,55 +61,17 @@ spec:
           enabled: true
           size: 8Gi
   # ----------------------------------------------------------------------- #
-  # Milvus — per-account behavioural feature vectors for anomaly detection.
+  # Qdrant — per-account behavioural feature vectors for anomaly detection.
   # ----------------------------------------------------------------------- #
-  - chartName: milvus
-    chartRepo: application-collection
-    chartVersion: 5.0.22
+  - chartName: qdrant
+    chartRepo: suse-ai-registry
+    chartVersion: 1.17.0
     values:
-      cluster:
-        enabled: false
-      image:
-        all:
-          pullPolicy: IfNotPresent
-          registry: dp.apps.rancher.io
-          repository: containers/milvus
-          tag: 2.6.18-8.4
-      etcd:
-        enabled: true
-        replicaCount: 1
-      kafka:
-        enabled: false
-      minio:
-        enabled: true
-        mode: standalone
-        name: minio
-        replicas: 1
-        rootPath: file
-        users:
-        - accessKey: minioadmin
-          policy: consoleAdmin
-          secretKey: minioadmin
-      proxy:
-        enabled: true
-        http:
-          enabled: true
-      standalone:
-        messageQueue: woodpecker
-        persistence:
-          enabled: true
-          persistentVolumeClaim:
-            accessModes: ReadWriteOnce
-            size: 50Gi
-      streaming:
-        enabled: true
-        woodpecker:
-          embedded: true
-          storage:
-            type: minio
+      fullnameOverride: qdrant
+      persistence:
+        accessModes: ["ReadWriteOnce"]
+        size: 5Gi
       service:
-        port: 19530
-        portName: milvus
         type: ClusterIP
   # ----------------------------------------------------------------------- #
   # Ollama — local LLM (AML analyst), CPU.
@@ -188,8 +150,8 @@ spec:
       env:
       - name: POSTGRES_URI
         value: postgresql://fraud:fraud@fraud-db:5432/fraud
-      - name: MILVUS_URI
-        value: http://milvus:19530
+      - name: QDRANT_URL
+        value: http://qdrant:6333
       - name: SCALE_FACTOR
         value: "0.001"
       ingress:

@@ -1,12 +1,12 @@
 id: airflow-genai-rag
 displayName: Airflow GenAI RAG (Ollama)
 description: >-
-  Apache Airflow + Ollama + Milvus GenAI RAG pipeline, all from the SUSE Application
+  Apache Airflow + Ollama + Qdrant GenAI RAG pipeline, all from the SUSE Application
   Collection. A derivation of Astronomer's gen-ai-fine-tune-rag use case: Airflow
   orchestrates knowledge-base ingestion and Ollama model customization; a local
   SUSE-styled UI generates grounded posts via RAG.
 category: data-engineering
-tags: [airflow, ollama, milvus, rag]
+tags: [airflow, ollama, qdrant, rag]
 blueprintFile: airflow-genai-rag-1-0-0.yaml
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
@@ -22,23 +22,23 @@ localFrontend:
   openPath: /
   env:
     OLLAMA_BASE_URL: "http://localhost:11434"
-    MILVUS_URI: "http://localhost:19530"
+    QDRANT_URL: "http://localhost:6333"
   portForwards:
     - {name: ollama, service: ollama, local: 11434, remote: 11434}
-    - {name: milvus, service: milvus, local: 19530, remote: 19530}
+    - {name: qdrant, service: qdrant, local: 6333, remote: 6333}
 # In-cluster component UIs the marketplace can port-forward on demand (button
 # enabled only once the service is Ready).
 componentUIs:
   - {name: airflow, label: "Airflow UI", service: apache-airflow-api-server, port: 8080, path: /}
 # Base LLM size (CPU). The DAG builds "astra-custom" from this; the embedding model
-# (nomic-embed-text) stays pinned so the Milvus index dimensionality still matches.
+# (nomic-embed-text) stays pinned so the Qdrant index dimensionality still matches.
 # No frontend envKey — the UI picks the built model from ollama's tag list.
 modelSizes:
   default: small
   replace: "{{MODEL}}"
   options:
-    - {id: small, label: "1.5B — faster (CPU)", model: "qwen2.5:1.5b"}
-    - {id: large, label: "3B — higher quality", model: "qwen2.5:3b"}
+    - {id: small, label: "0.5B — fastest (CPU)", model: "qwen2.5:0.5b"}
+    - {id: large, label: "0.8B — higher quality", model: "qwen3.5:0.8b"}
 # The DAGs bpm triggers sequentially from the guide (trigger-dags action) — same
 # order as the manual steps below. Each waits for the previous to finish; they can
 # still be run manually in the Airflow UI. Defaults: apache-airflow-api-server:8080,
@@ -57,7 +57,7 @@ guide:
     body: |
       In the SUSE AI Factory UI, go to **Blueprints → Airflow GenAI RAG (Ollama) →
       Create AIWorkload**, choose a target **namespace**, and deploy. Wait for the
-      Airflow, Ollama and Milvus pods to be Ready. Enter the namespace you chose below
+      Airflow, Ollama and Qdrant pods to be Ready. Enter the namespace you chose below
       so the following steps can reach the services.
 
       > Note: the blueprint pulls its Airflow DAGs via git-sync from a public repo — set
@@ -69,17 +69,17 @@ guide:
       Airflow web UI (log in with **admin / admin**). Then trigger these DAGs **in order**,
       waiting for each to finish:
 
-      1. `ingest_knowledge_base` — embeds the knowledge base into Milvus.
+      1. `ingest_knowledge_base` — embeds the knowledge base into Qdrant.
       2. `customize_model` — builds the customized `astra-custom` model on Ollama.
     action: {type: trigger-dags}
   - title: Launch the demo UI
     body: |
-      Starts `kubectl port-forward` to Ollama (11434) and Milvus (19530) and runs the
+      Starts `kubectl port-forward` to Ollama (11434) and Qdrant (6333) and runs the
       Astra FastAPI UI locally.
     action: {type: start-frontend}
   - title: Generate a post
     body: |
       Open the demo UI, enter a topic, and hit **Generate**. It embeds the topic,
-      retrieves the closest knowledge-base chunks from Milvus, and asks `astra-custom`
+      retrieves the closest knowledge-base chunks from Qdrant, and asks `astra-custom`
       to write a grounded post — showing the retrieved sources alongside.
     action: {type: open-url, url: "http://localhost:8000"}

@@ -21,31 +21,31 @@ Blueprint CR: [`airflow-genai-rag-1-0-0.yaml`](airflow-genai-rag-1-0-0.yaml)
 |-----------|------------------------|------|
 | **Apache Airflow** | `apache-airflow` `1.22.0` (Airflow 3.2.2) | Orchestrates the ingestion + customization DAGs. DAGs delivered via git-sync. |
 | **Ollama** | `ollama` `1.55.0` | Serves `llama3.2:1b` (chat) and `nomic-embed-text` (embeddings), CPU-only. |
-| **Milvus** | `milvus` `5.0.22` | Vector store for the RAG knowledge base (standalone, kafka disabled). |
+| **Qdrant** | `qdrant` `1.17.0` | Lightweight vector store for the RAG knowledge base. |
 
 ## How it works
 
 ```
                     ┌──────────────────────── Apache Airflow ────────────────────────┐
- include/knowledge_base/*.md ─▶ ingest_knowledge_base:  chunk ─▶ embed (Ollama) ─▶ Milvus `kb`
+ include/knowledge_base/*.md ─▶ ingest_knowledge_base:  chunk ─▶ embed (Ollama) ─▶ Qdrant `kb`
  include/examples/*.txt       ─▶ customize_model:       few-shot ─▶ Ollama /api/create ─▶ `astra-custom`
                     └─────────────────────────────────────────────────────────────────┘
 
- Local demo UI (FastAPI + SUSE style):  topic ─▶ embed ─▶ Milvus search ─▶ generate (astra-custom) ─▶ post
+ Local demo UI (FastAPI + SUSE style):  topic ─▶ embed ─▶ Qdrant search ─▶ generate (astra-custom) ─▶ post
 ```
 
 - **RAG ingestion** (`dags/ingest_knowledge_base.py`) — reads the markdown knowledge
   base, splits it into overlapping chunks, embeds each chunk with Ollama
-  `nomic-embed-text`, and upserts the vectors + metadata into a Milvus collection `kb`.
+  `nomic-embed-text`, and upserts the vectors + metadata into a Qdrant collection `kb`.
 - **Model customization** (`dags/customize_model.py`) — turns the example posts into
   a system persona + few-shot messages and calls Ollama `/api/create` to build a
   custom model `astra-custom`. This is the CPU-friendly, **no-GPU analogue of the
   original's OpenAI hosted fine-tuning** — it teaches the base model a house *style*
   rather than training weights.
-- **Reset** (`dags/clear_milvus.py`) — drops the `kb` collection so you can re-ingest.
+- **Reset** (`dags/clear_qdrant.py`) — drops the `kb` collection so you can re-ingest.
 
-The DAGs talk to Ollama and Milvus **over HTTP with `requests` only** (Milvus via its
-proxy REST v2 API), so the stock Airflow image needs no extra Python packages.
+The DAGs talk to Ollama and Qdrant **over HTTP with `requests` only** (Qdrant's REST
+API), so the stock Airflow image needs no extra Python packages.
 
 ## Prerequisites (on the target downstream cluster)
 
@@ -53,7 +53,7 @@ proxy REST v2 API), so the stock Airflow image needs no extra Python packages.
    CRDs).
 2. The **`application-collection` ClusterRepo** plus an **Opaque** secret carrying the
    raw `user` + `token` for `dp.apps.rancher.io` (no `APP_COLLECTION_TOKEN=` prefix).
-3. A **default StorageClass** (Airflow, Ollama, and Milvus all use PVCs).
+3. A **default StorageClass** (Airflow, Ollama, and Qdrant all use PVCs).
 4. **cert-manager** (for the Airflow UI ingress TLS).
 
 ## 1. Publish the DAGs (git-sync)
@@ -83,14 +83,14 @@ kubectl apply -f airflow-genai-rag-1-0-0.yaml     # adds the Blueprint CR
 Then, in the SUSE AI Factory UI, **create an AIWorkload** from the
 *Airflow GenAI RAG (Ollama)* blueprint and pick a target namespace. The operator
 deploys all three components (each reachable in-namespace at `http://ollama:11434`,
-`http://milvus:19530`, and the Airflow services).
+`http://qdrant:6333`, and the Airflow services).
 
 ## 3. Run the pipeline
 
 1. Add a DNS record (or `/etc/hosts` entry) for the `airflow-genai` ingress host
    pointing at the cluster's ingress controller, and open the **Airflow UI**.
 2. Trigger **`ingest_knowledge_base`** — wait for it to succeed (chunks embedded into
-   Milvus).
+   Qdrant).
 3. Trigger **`customize_model`** — creates the `astra-custom` model on Ollama.
 
 Verify:
@@ -108,7 +108,7 @@ generation against the in-cluster services. Run it locally:
 ```bash
 # 1. Port-forward the two services (separate terminals or with &)
 kubectl -n <ns> port-forward svc/ollama 11434:11434
-kubectl -n <ns> port-forward svc/milvus 19530:19530
+kubectl -n <ns> port-forward svc/qdrant 6333:6333
 
 # 2. Start the UI
 cd ui
@@ -117,7 +117,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 # open http://localhost:8000
 ```
 
-Enter a topic and hit **Generate**: the UI embeds it, searches Milvus for the closest
+Enter a topic and hit **Generate**: the UI embeds it, searches Qdrant for the closest
 knowledge-base chunks, and asks `astra-custom` to write a grounded post — showing the
 retrieved sources alongside. The **Search** box does retrieval-only against the KB.
 
@@ -126,10 +126,10 @@ UI configuration (env, with local defaults):
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API |
-| `MILVUS_URI` | `http://localhost:19530` | Milvus proxy REST API |
+| `QDRANT_URL` | `http://localhost:6333` | Qdrant REST API |
 | `EMBED_MODEL` | `nomic-embed-text` | embedding model |
 | `GEN_MODEL` | `astra-custom` | generation model (falls back if not created) |
-| `KB_COLLECTION` | `kb` | Milvus collection name |
+| `KB_COLLECTION` | `kb` | Qdrant collection name |
 
 > Optional: the UI ships a `Dockerfile` so you can publish it and deploy it in-cluster
 > (like `suse-vss-ui`) instead of running locally.
@@ -137,7 +137,7 @@ UI configuration (env, with local defaults):
 ## Customize
 
 - **Knowledge base** — add/replace markdown files in `include/knowledge_base/`, then
-  re-run `clear_milvus` + `ingest_knowledge_base`.
+  re-run `clear_qdrant` + `ingest_knowledge_base`.
 - **Style** — edit the posts in `include/examples/` (first line = topic, rest = body)
   and the `SYSTEM_PERSONA` in `dags/customize_model.py`, then re-run `customize_model`.
 - **Models** — change `BASE_MODEL` / `EMBED_MODEL` in the Blueprint CR's `apache-airflow`
@@ -157,10 +157,10 @@ kubectl delete -f airflow-genai-rag-1-0-0.yaml
 airflow-genai-rag/
   airflow-genai-rag-1-0-0.yaml   # the Blueprint CR (kubectl apply)
   dags/                          # synced into Airflow via git-sync
-    common.py                    # Ollama + Milvus HTTP helpers (requests only)
-    ingest_knowledge_base.py     # KB -> chunk -> embed -> Milvus
+    common.py                    # Ollama + Qdrant HTTP helpers (requests only)
+    ingest_knowledge_base.py     # KB -> chunk -> embed -> Qdrant
     customize_model.py           # examples -> Ollama /api/create (astra-custom)
-    clear_milvus.py              # drop the kb collection
+    clear_qdrant.py              # drop the kb collection
   include/
     knowledge_base/*.md          # sample knowledge base
     examples/*.txt               # sample "style" posts for customization

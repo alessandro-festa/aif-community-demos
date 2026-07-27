@@ -9,7 +9,7 @@ metadata:
 # Same as the Ollama variant, but the chat + accident-photo vision model
 # (Qwen/Qwen2.5-VL-7B-Instruct) is served by vLLM on an NVIDIA GPU. A small CPU
 # Ollama serves nomic-embed-text for the semantic index (embeddings). Airflow
-# generates a synthetic insurance support dataset into Postgres + Milvus; a local
+# generates a synthetic insurance support dataset into Postgres + Qdrant; a local
 # SUSE chat UI opens/closes tickets and suggests similar cases, redacted (Presidio).
 # Requires a real NVIDIA GPU node + the GPU Operator. DEMO ONLY — synthetic data.
 spec:
@@ -21,7 +21,7 @@ spec:
     Apache Airflow generates a synthetic support dataset — customers with family
     relationships, policies, accident types, claims (with derived paid / within-policy
     decisions), and support tickets — into PostgreSQL, then embeds the tickets into
-    Milvus for semantic "similar case" search. A local SUSE-styled chat UI lets a
+    Qdrant for semantic "similar case" search. A local SUSE-styled chat UI lets a
     customer upload an accident photo, describe the issue, open or close tickets (the
     assistant proposes, the user confirms), and see similar past cases — REDACTED with
     Presidio before display.
@@ -58,55 +58,17 @@ spec:
           enabled: true
           size: 8Gi
   # ----------------------------------------------------------------------- #
-  # Milvus — semantic "similar case" index (standalone + REST v2 proxy).
+  # Qdrant — semantic "similar case" index (lightweight vector DB, REST on 6333).
   # ----------------------------------------------------------------------- #
-  - chartName: milvus
-    chartRepo: application-collection
-    chartVersion: 5.0.22
+  - chartName: qdrant
+    chartRepo: suse-ai-registry
+    chartVersion: 1.17.0
     values:
-      cluster:
-        enabled: false
-      image:
-        all:
-          pullPolicy: IfNotPresent
-          registry: dp.apps.rancher.io
-          repository: containers/milvus
-          tag: 2.6.18-8.4
-      etcd:
-        enabled: true
-        replicaCount: 1
-      kafka:
-        enabled: false
-      minio:
-        enabled: true
-        mode: standalone
-        name: minio
-        replicas: 1
-        rootPath: file
-        users:
-        - accessKey: minioadmin
-          policy: consoleAdmin
-          secretKey: minioadmin
-      proxy:
-        enabled: true
-        http:
-          enabled: true
-      standalone:
-        messageQueue: woodpecker
-        persistence:
-          enabled: true
-          persistentVolumeClaim:
-            accessModes: ReadWriteOnce
-            size: 50Gi
-      streaming:
-        enabled: true
-        woodpecker:
-          embedded: true
-          storage:
-            type: minio
+      fullnameOverride: qdrant
+      persistence:
+        accessModes: ["ReadWriteOnce"]
+        size: 5Gi
       service:
-        port: 19530
-        portName: milvus
         type: ClusterIP
   # ----------------------------------------------------------------------- #
   # vLLM — chat + accident-photo vision (Qwen2.5-VL-7B), on GPU.
@@ -212,8 +174,8 @@ spec:
       env:
       - name: POSTGRES_URI
         value: postgresql://insurance:insurance@support-db:5432/insurance
-      - name: MILVUS_URI
-        value: http://milvus:19530
+      - name: QDRANT_URL
+        value: http://qdrant:6333
       - name: EMBED_BASE_URL
         value: http://ollama:11434/v1
       - name: EMBED_MODEL

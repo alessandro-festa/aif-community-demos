@@ -3,18 +3,18 @@ Shared helpers for the DORA Compliance Analysis DAGs.
 
 The DAGs simulate synthetic ICT operational incidents, classify each one against the
 EU DORA / BaFin Article 18 thresholds (CRITICAL / MAJOR / MINOR + notification deadline),
-build compliance marts in PostgreSQL, index the incidents in Milvus for semantic search,
+build compliance marts in PostgreSQL, index the incidents in Qdrant for semantic search,
 and raise SLA-breach alerts. A local SUSE-styled UI then lets an LLM *explain* incidents and
 an LLM *agent* search the data (through the same Airflow Postgres connection) and drive the
 pipeline via the Airflow REST API.
 
 Faithful to Chirag-Kathuria-009/DORA-Pipeline's classifier rules; the heavy streaming/
 lakehouse plumbing (Kafka/Spark/Iceberg/dbt/Great Expectations/Superset) is replaced by
-Airflow Python tasks + PostgreSQL + Milvus + a local FastAPI UI — the all-SUSE-AppCo pattern.
+Airflow Python tasks + PostgreSQL + Qdrant + a local FastAPI UI — the all-SUSE-AppCo pattern.
 
 Config (env, injected by the apache-airflow component):
   POSTGRES_URI   postgresql://dora:dora@dora-db:5432/dora
-  MILVUS_URI     http://milvus:19530
+  QDRANT_URL     http://qdrant:6333
   N_INCIDENTS    600     (how many synthetic incidents to simulate)
   EMBED_DIM      256     (deterministic hashing-embedding size for semantic search)
   INCIDENTS_COLLECTION  incidents
@@ -31,8 +31,8 @@ import psycopg2.extras
 import requests
 
 POSTGRES_URI = os.environ.get("POSTGRES_URI", "postgresql://dora:dora@dora-db:5432/dora")
-MILVUS_URI = os.environ.get("MILVUS_URI", "http://milvus:19530").rstrip("/")
-MILVUS_TOKEN = os.environ.get("MILVUS_TOKEN", "")
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333").rstrip("/")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 N_INCIDENTS = int(os.environ.get("N_INCIDENTS", "600"))
 EMBED_DIM = int(os.environ.get("EMBED_DIM", "256"))
 INCIDENTS_COLLECTION = os.environ.get("INCIDENTS_COLLECTION", "incidents")
@@ -153,66 +153,46 @@ def pg_query(sql: str, params=None) -> list[tuple]:
 
 
 # --------------------------------------------------------------------------- #
-# Milvus (REST v2 API via the proxy — requests only)
+# Qdrant (REST API — requests only)
 # --------------------------------------------------------------------------- #
-def _milvus_headers() -> dict:
+def _qdrant_headers() -> dict:
     h = {"Content-Type": "application/json"}
-    if MILVUS_TOKEN:
-        h["Authorization"] = f"Bearer {MILVUS_TOKEN}"
+    if QDRANT_API_KEY:
+        h["api-key"] = QDRANT_API_KEY
     return h
 
 
-def _milvus_post(path: str, body: dict) -> dict:
-    r = requests.post(
-        f"{MILVUS_URI}{path}", json=body, headers=_milvus_headers(), timeout=HTTP_TIMEOUT
+def _qdrant_request(method: str, path: str, body: dict | None = None) -> dict:
+    r = requests.request(
+        method, f"{QDRANT_URL}{path}", json=body, headers=_qdrant_headers(), timeout=HTTP_TIMEOUT
     )
     r.raise_for_status()
-    data = r.json()
-    if isinstance(data, dict) and data.get("code") not in (0, None):
-        raise RuntimeError(f"Milvus error on {path}: {data}")
+    data = r.json() if r.text else {}
+    if isinstance(data, dict) and data.get("status") not in ("ok", None):
+        raise RuntimeError(f"Qdrant error on {path}: {data}")
     return data
 
 
-def milvus_has_collection(name: str = INCIDENTS_COLLECTION) -> bool:
-    data = _milvus_post("/v2/vectordb/collections/list", {})
-    return name in (data.get("data") or [])
+def qdrant_has_collection(name: str = INCIDENTS_COLLECTION) -> bool:
+    r = requests.get(f"{QDRANT_URL}/collections/{name}", headers=_qdrant_headers(),
+                     timeout=HTTP_TIMEOUT)
+    return r.status_code == 200
 
 
-def milvus_drop_collection(name: str = INCIDENTS_COLLECTION) -> None:
-    if milvus_has_collection(name):
-        _milvus_post("/v2/vectordb/collections/drop", {"collectionName": name})
+def qdrant_drop_collection(name: str = INCIDENTS_COLLECTION) -> None:
+    if qdrant_has_collection(name):
+        _qdrant_request("DELETE", f"/collections/{name}")
 
 
-def milvus_create_collection(dim: int = EMBED_DIM, name: str = INCIDENTS_COLLECTION) -> None:
-    body = {
-        "collectionName": name,
-        "schema": {
-            "autoID": False,
-            "enableDynamicField": True,
-            "fields": [
-                {"fieldName": "id", "dataType": "Int64", "isPrimary": True},
-                {"fieldName": "vector", "dataType": "FloatVector",
-                 "elementTypeParams": {"dim": dim}},
-                {"fieldName": "incident_id", "dataType": "VarChar",
-                 "elementTypeParams": {"max_length": 64}},
-                {"fieldName": "dora_severity", "dataType": "VarChar",
-                 "elementTypeParams": {"max_length": 16}},
-                {"fieldName": "incident_type", "dataType": "VarChar",
-                 "elementTypeParams": {"max_length": 32}},
-                {"fieldName": "text", "dataType": "VarChar",
-                 "elementTypeParams": {"max_length": 4096}},
-            ],
-        },
-        "indexParams": [
-            {"fieldName": "vector", "metricType": "COSINE",
-             "indexName": "vector_index", "indexType": "AUTOINDEX"}
-        ],
-    }
-    _milvus_post("/v2/vectordb/collections/create", body)
+def qdrant_create_collection(dim: int = EMBED_DIM, name: str = INCIDENTS_COLLECTION) -> None:
+    _qdrant_request("PUT", f"/collections/{name}",
+                    {"vectors": {"size": dim, "distance": "Cosine"}})
 
 
-def milvus_insert(rows: list[dict], name: str = INCIDENTS_COLLECTION) -> None:
+def qdrant_insert(rows: list[dict], name: str = INCIDENTS_COLLECTION) -> None:
     batch = 200
     for i in range(0, len(rows), batch):
-        _milvus_post("/v2/vectordb/entities/insert",
-                     {"collectionName": name, "data": rows[i:i + batch]})
+        points = [{"id": r["id"], "vector": r["vector"],
+                   "payload": {k: v for k, v in r.items() if k not in ("id", "vector")}}
+                  for r in rows[i:i + batch]]
+        _qdrant_request("PUT", f"/collections/{name}/points", {"points": points})

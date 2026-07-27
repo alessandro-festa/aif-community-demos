@@ -32,7 +32,7 @@ EXPOSE 8000
 ENV OPENAI_BASE_URL=http://ollama:11434/v1 \
     OPENAI_API_KEY=EMPTY \
     DEFAULT_MODEL=dcarrascosa/medgemma-1.5-4b-it:Q4_K_M \
-    MILVUS_URI=http://milvus:19530 \
+    QDRANT_URL=http://qdrant:6333 \
     CLIP_MODEL=hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224 \
     IMG_COLLECTION=xray_embeddings
 

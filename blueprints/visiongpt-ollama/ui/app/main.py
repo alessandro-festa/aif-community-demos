@@ -7,13 +7,16 @@ LLM over detection metadata; this version is VLM-native: each sampled video fram
 is sent to a locally-served vision-language model over the OpenAI-compatible
 /v1/chat/completions API, which returns a per-frame danger score + short reason.
 
-The SAME code drives both blueprint variants — only env differs:
-  * Ollama  : OPENAI_BASE_URL=http://localhost:11434/v1  VLM_MODEL=qwen2.5vl:3b
-  * vLLM    : OPENAI_BASE_URL=http://localhost:8000/v1   VLM_MODEL=Qwen/Qwen2.5-VL-3B-Instruct
+This Ollama (CPU) variant is tuned for speed and serves moondream:1.8b — a much
+smaller, simpler VLM than the vLLM variant's Qwen2.5-VL-3B-Instruct. moondream is
+not a strong instruction-follower for a JSON-schema system prompt, so this variant
+asks a direct yes/no hazard question instead (see hazard_question / parse_result
+below) — the vLLM variant keeps the original JSON-object prompt, which Qwen2.5-VL
+follows reliably.
 
 Configuration (env):
   OPENAI_BASE_URL  default http://localhost:11434/v1   (OpenAI-compatible endpoint)
-  VLM_MODEL        default qwen2.5vl:3b                 (must match the served model id)
+  VLM_MODEL        default moondream:1.8b               (must match the served model id)
   OPENAI_API_KEY   default EMPTY                        (local servers ignore it)
   FRAME_INTERVAL   default 0 = auto (~1.5s)             (>0 = seconds between sampled frames)
   MAX_FRAMES       default 40                           (cap frames analysed per run)
@@ -36,7 +39,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1").rstrip("/")
-VLM_MODEL = os.environ.get("VLM_MODEL", "qwen2.5vl:3b")
+VLM_MODEL = os.environ.get("VLM_MODEL", "moondream:1.8b")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "EMPTY")
 FRAME_INTERVAL = float(os.environ.get("FRAME_INTERVAL", "0"))  # 0 = auto
 MAX_FRAMES = int(os.environ.get("MAX_FRAMES", "40"))
@@ -51,25 +54,25 @@ app = FastAPI(title="VisionGPT (SUSE)")
 # --------------------------------------------------------------------------- #
 # Prompts (faithful to the VisionGPT paper, adapted for a VLM that sees the frame)
 # --------------------------------------------------------------------------- #
+# moondream is a small, direct-answer VQA model — it doesn't reliably follow a
+# system-prompt persona + JSON-schema instruction the way Qwen2.5-VL does. So
+# this variant asks a single, direct yes/no question instead of requesting
+# structured JSON; parse_result() below parses that plain-text answer.
 SENSITIVITY_PROMPTS = {
-    "low": "Report ONLY imminent, direct threats to the person's safety.",
+    "low": "Only count imminent, direct threats to the person's safety.",
     "normal": "Include potential hazards that could pose a risk if not avoided.",
-    "high": "Report anything that could cause any inconvenience or danger; "
-    "prioritise pedestrians and vehicles.",
+    "high": "Count anything that could cause any inconvenience or danger, "
+    "especially pedestrians and vehicles.",
 }
 
 
-def system_prompt(sensitivity: str) -> str:
+def hazard_question(sensitivity: str) -> str:
     tier = SENSITIVITY_PROMPTS.get(sensitivity, SENSITIVITY_PROMPTS["normal"])
     return (
-        "You are a navigation assistant for a blind person. You are given a single "
-        "frame from a front-facing camera as the person walks forward. Spatial guide: "
-        "objects in the left quarter are to the LEFT, the right quarter to the RIGHT, "
-        "the upper half is FRONT (farther away), the lower half is GROUND (near the "
-        "feet). " + tier + " Judge how dangerous the scene is for walking. "
-        'Respond with ONLY a compact JSON object: '
-        '{"danger_score": 0 or 1, "reason": "<=10 words"} '
-        "where danger_score is 1 for an immediate hazard, else 0."
+        "This photo is one frame from a blind person's front-facing walking camera. "
+        + tier + " Is there a hazard in this frame that is dangerous for someone "
+        "walking forward? Answer with exactly one line: start with YES or NO, then a "
+        "colon, then the hazard in 6 words or fewer (or 'clear' if NO)."
     )
 
 
@@ -120,16 +123,17 @@ def sample_frames(path: str):
 # VLM call (OpenAI-compatible; works for both Ollama and vLLM)
 # --------------------------------------------------------------------------- #
 def analyse_frame(b64: str, sensitivity: str) -> dict:
+    # A single user turn (question + image) — moondream doesn't need or reliably
+    # honour a separate system-role persona, so everything goes in one message.
     payload = {
         "model": VLM_MODEL,
         "temperature": 0,
-        "max_tokens": 120,
+        "max_tokens": 40,
         "messages": [
-            {"role": "system", "content": system_prompt(sensitivity)},
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Analyse this frame for navigation hazards."},
+                    {"type": "text", "text": hazard_question(sensitivity)},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                 ],
             },
@@ -147,8 +151,21 @@ def analyse_frame(b64: str, sensitivity: str) -> dict:
 
 
 def parse_result(text: str) -> dict:
-    """Robustly extract {danger_score, reason} from a model reply."""
+    """Robustly extract {danger_score, reason} from a model reply.
+
+    Primary path: moondream's plain "YES: <reason>" / "NO: <reason>" answer.
+    Fallback: a JSON object {"danger_score": 0|1, "reason": "..."} — kept for
+    compatibility if VLM_MODEL is ever pointed back at a JSON-following VLM
+    (e.g. Qwen2.5-VL, as in the vLLM variant of this blueprint).
+    """
     text = text.strip()
+    m = re.match(r"^(yes|no)\b[:\-,]?\s*(.*)$", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        reason = m.group(2).strip().splitlines()[0] if m.group(2).strip() else text
+        return {
+            "danger_score": 1 if m.group(1).lower() == "yes" else 0,
+            "reason": reason[:120],
+        }
     # Strip a ```json fence if present.
     text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
     try:
@@ -159,7 +176,7 @@ def parse_result(text: str) -> dict:
         }
     except Exception:
         pass
-    # Fallback: regex for the two fields.
+    # Last resort: regex for the two JSON-shaped fields.
     ds = re.search(r'danger_score"?\s*[:=]\s*("?)([01])\1', text)
     rs = re.search(r'reason"?\s*[:=]\s*"([^"]*)"', text)
     return {

@@ -3,11 +3,11 @@ displayName: Fraud / AML Detection (vLLM, GPU)
 description: >-
   Financial-crime / money-laundering / anomaly detection. Airflow generates a synthetic
   fraud graph (SantanderAI/gen-fraud-graph), trains an XGBoost classifier, and indexes
-  behavioural vectors in Milvus for anomaly detection; an LLM served by vLLM on GPU
+  behavioural vectors in Qdrant for anomaly detection; an LLM served by vLLM on GPU
   (Qwen/Qwen2.5-3B-Instruct) acts as an AML analyst explaining flagged accounts. Requires a
   real GPU node. With thanks to SantanderAI/gen-fraud-graph for the inspiration.
 category: anomaly-detection
-tags: [fraud, aml, airflow, xgboost, vllm, milvus, anomaly, gpu]
+tags: [fraud, aml, airflow, xgboost, vllm, qdrant, anomaly, gpu]
 blueprintFile: fraud-detection-vllm-1-0-0.yaml
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
@@ -24,13 +24,13 @@ localFrontend:
   openPath: /
   env:
     POSTGRES_URI: "postgresql://fraud:fraud@localhost:5432/fraud"
-    MILVUS_URI: "http://localhost:19530"
+    QDRANT_URL: "http://localhost:6333"
     OPENAI_BASE_URL: "http://localhost:8000/v1"
     LLM_MODEL: "Qwen/Qwen2.5-3B-Instruct"
     OPENAI_API_KEY: "EMPTY"
   portForwards:
     - {name: fraud-db, service: fraud-db, local: 5432, remote: 5432}
-    - {name: milvus, service: milvus, local: 19530, remote: 19530}
+    - {name: qdrant, service: qdrant, local: 6333, remote: 6333}
     - {name: vllm, service: vllm-router-service, local: 8000, remote: 80}
 # In-cluster component UIs the marketplace can port-forward on demand (button
 # enabled only once the service is Ready).
@@ -67,13 +67,13 @@ guide:
 
       1. `generate_fraud_dataset` — synthetic fraud graph → PostgreSQL.
       2. `engineer_and_train` — features → XGBoost → account scores + model metrics.
-      3. `flag_and_anomaly` — Milvus anomaly index → flagged accounts.
+      3. `flag_and_anomaly` — Qdrant anomaly index → flagged accounts.
 
       Raise `SCALE_FACTOR` on the blueprint for a bigger dataset.
     action: {type: trigger-dags}
   - title: Launch the investigator UI
     body: |
-      Starts `kubectl port-forward` to Postgres (5432), Milvus (19530) and the vLLM router
+      Starts `kubectl port-forward` to Postgres (5432), Qdrant (6333) and the vLLM router
       (`vllm-router-service:80`) and runs the SUSE investigator dashboard locally. If your Helm
       release name isn't `vllm`, adjust the port-forward service to `<release>-router-service`.
     action: {type: start-frontend}

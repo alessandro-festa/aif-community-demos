@@ -3,7 +3,7 @@ Shared helpers for the fraud / AML detection DAGs.
 
 The DAGs generate a synthetic fraud graph (SantanderAI/gen-fraud-graph), load it into
 PostgreSQL, engineer graph/behavioural features, train an XGBoost classifier, and push
-per-account feature vectors into Milvus for embedding-based anomaly detection.
+per-account feature vectors into Qdrant for embedding-based anomaly detection.
 
 These DAGs need real Python libraries (pandas, numpy, networkx, scikit-learn, xgboost,
 imbalanced-learn, psycopg2, gen-fraud-graph). They are installed into the Airflow image at
@@ -11,7 +11,7 @@ start via the chart's `_PIP_ADDITIONAL_REQUIREMENTS` env (see the Blueprint CR).
 
 Config (env, injected by the apache-airflow component):
   POSTGRES_URI   postgresql://fraud:fraud@fraud-db:5432/fraud
-  MILVUS_URI     http://milvus:19530
+  QDRANT_URL     http://qdrant:6333
   SCALE_FACTOR   0.001   (gen-fraud-graph scale; ~10k accounts / ~90k tx / ~10 rings)
   HIGH_VALUE     1000    (amount threshold for "suspicious" edges used in ring detection)
   ACCOUNTS_COLLECTION  accounts
@@ -25,14 +25,14 @@ import psycopg2.extras
 import requests
 
 POSTGRES_URI = os.environ.get("POSTGRES_URI", "postgresql://fraud:fraud@fraud-db:5432/fraud")
-MILVUS_URI = os.environ.get("MILVUS_URI", "http://milvus:19530").rstrip("/")
-MILVUS_TOKEN = os.environ.get("MILVUS_TOKEN", "")
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333").rstrip("/")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 SCALE_FACTOR = float(os.environ.get("SCALE_FACTOR", "0.001"))
 HIGH_VALUE = float(os.environ.get("HIGH_VALUE", "1000"))
 ACCOUNTS_COLLECTION = os.environ.get("ACCOUNTS_COLLECTION", "accounts")
 HTTP_TIMEOUT = 120
 
-# Per-account feature vector (fixed order — used for both XGBoost and the Milvus vector).
+# Per-account feature vector (fixed order — used for both XGBoost and the Qdrant vector).
 FEATURES = [
     "out_degree", "in_degree", "out_amount", "in_amount", "mean_amount",
     "max_amount", "high_value_edges", "in_cycle", "balance", "risk_score",
@@ -69,75 +69,65 @@ def pg_query(sql: str, params=None) -> list[tuple]:
 
 
 # --------------------------------------------------------------------------- #
-# Milvus (REST v2 API via the proxy — requests only)
+# Qdrant (REST API — requests only)
 # --------------------------------------------------------------------------- #
-def _milvus_headers() -> dict:
+def _qdrant_headers() -> dict:
     h = {"Content-Type": "application/json"}
-    if MILVUS_TOKEN:
-        h["Authorization"] = f"Bearer {MILVUS_TOKEN}"
+    if QDRANT_API_KEY:
+        h["api-key"] = QDRANT_API_KEY
     return h
 
 
-def _milvus_post(path: str, body: dict) -> dict:
-    r = requests.post(
-        f"{MILVUS_URI}{path}", json=body, headers=_milvus_headers(), timeout=HTTP_TIMEOUT
+def _qdrant_request(method: str, path: str, body: dict | None = None) -> requests.Response:
+    return requests.request(
+        method, f"{QDRANT_URL}{path}", json=body, headers=_qdrant_headers(), timeout=HTTP_TIMEOUT
     )
+
+
+def qdrant_has_collection(name: str = ACCOUNTS_COLLECTION) -> bool:
+    r = _qdrant_request("GET", f"/collections/{name}")
+    if r.status_code == 404:
+        return False
     r.raise_for_status()
-    data = r.json()
-    if isinstance(data, dict) and data.get("code") not in (0, None):
-        raise RuntimeError(f"Milvus error on {path}: {data}")
-    return data
+    return True
 
 
-def milvus_has_collection(name: str = ACCOUNTS_COLLECTION) -> bool:
-    data = _milvus_post("/v2/vectordb/collections/list", {})
-    return name in (data.get("data") or [])
+def qdrant_drop_collection(name: str = ACCOUNTS_COLLECTION) -> None:
+    if qdrant_has_collection(name):
+        r = _qdrant_request("DELETE", f"/collections/{name}")
+        r.raise_for_status()
 
 
-def milvus_drop_collection(name: str = ACCOUNTS_COLLECTION) -> None:
-    if milvus_has_collection(name):
-        _milvus_post("/v2/vectordb/collections/drop", {"collectionName": name})
+def qdrant_create_collection(dim: int, name: str = ACCOUNTS_COLLECTION) -> None:
+    body = {"vectors": {"size": dim, "distance": "Cosine"}}
+    r = _qdrant_request("PUT", f"/collections/{name}", body)
+    r.raise_for_status()
 
 
-def milvus_create_collection(dim: int, name: str = ACCOUNTS_COLLECTION) -> None:
-    body = {
-        "collectionName": name,
-        "schema": {
-            "autoID": False,
-            "enableDynamicField": True,
-            "fields": [
-                {"fieldName": "id", "dataType": "Int64", "isPrimary": True},
-                {"fieldName": "vector", "dataType": "FloatVector",
-                 "elementTypeParams": {"dim": dim}},
-                {"fieldName": "account_id", "dataType": "VarChar",
-                 "elementTypeParams": {"max_length": 64}},
-                {"fieldName": "is_fraud", "dataType": "Int64"},
-            ],
-        },
-        "indexParams": [
-            {"fieldName": "vector", "metricType": "COSINE",
-             "indexName": "vector_index", "indexType": "AUTOINDEX"}
-        ],
-    }
-    _milvus_post("/v2/vectordb/collections/create", body)
-
-
-def milvus_insert(rows: list[dict], name: str = ACCOUNTS_COLLECTION) -> None:
+def qdrant_insert(rows: list[dict], name: str = ACCOUNTS_COLLECTION) -> None:
     batch = 200
     for i in range(0, len(rows), batch):
-        _milvus_post("/v2/vectordb/entities/insert",
-                     {"collectionName": name, "data": rows[i:i + batch]})
+        points = [
+            {
+                "id": row["id"],
+                "vector": row["vector"],
+                "payload": {k: v for k, v in row.items() if k not in ("id", "vector")},
+            }
+            for row in rows[i:i + batch]
+        ]
+        r = _qdrant_request("PUT", f"/collections/{name}/points", {"points": points})
+        r.raise_for_status()
 
 
-def milvus_search(vector: list[float], top_k: int, name: str = ACCOUNTS_COLLECTION) -> list[dict]:
-    data = _milvus_post("/v2/vectordb/entities/search", {
-        "collectionName": name,
-        "data": [vector],
+def qdrant_search(vector: list[float], top_k: int, name: str = ACCOUNTS_COLLECTION) -> list[dict]:
+    r = _qdrant_request("POST", f"/collections/{name}/points/search", {
+        "vector": vector,
         "limit": top_k,
-        "outputFields": ["account_id", "is_fraud"],
-        "searchParams": {"metricType": "COSINE"},
+        "with_payload": True,
     })
-    return data.get("data") or []
+    r.raise_for_status()
+    hits = (r.json() or {}).get("result") or []
+    return [{**(h.get("payload") or {}), "distance": h.get("score")} for h in hits]
 
 
 def acc_num(account_id: str) -> int:

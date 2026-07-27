@@ -13,7 +13,7 @@ Config (env; the marketplace injects these + remaps localhost to the port-forwar
   OM_USER         admin@open-metadata.org
   OM_PASSWORD     admin
   OPENAI_BASE_URL http://localhost:11434/v1
-  LLM_MODEL       qwen2.5:1.5b
+  LLM_MODEL       qwen2.5:0.5b
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ OM_USER = os.environ.get("OM_USER", "admin@open-metadata.org")
 OM_PASSWORD = os.environ.get("OM_PASSWORD", "admin")
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434/v1").rstrip("/")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "EMPTY")
-LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:1.5b")
+LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:0.5b")
 HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "180"))
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 

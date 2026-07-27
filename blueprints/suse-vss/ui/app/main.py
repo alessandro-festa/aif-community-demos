@@ -7,7 +7,7 @@ A small FastAPI backend that, all on CPU and with non-NVIDIA services:
     machine's CPU so it stays fast on small nodes,
   * captions/answers a chosen prompt against each frame using an OpenAI-compatible
     multimodal model (SUSE Ollama, default moondream:1.8b), streaming results live,
-  * stores a CLIP image embedding + thumbnail + metadata for each frame in Milvus,
+  * stores a CLIP image embedding + thumbnail + metadata for each frame in Qdrant,
   * lets you search videos by text — CLIP matches the *image* to your query
     (text→image semantic search), returning the frame and its metadata.
 
@@ -15,7 +15,8 @@ Configuration (env):
   OLLAMA_BASE_URL  default http://ollama:11434/v1
   VLM_MODEL        default moondream:1.8b
   CLIP_MODEL       default clip-ViT-B-32   (sentence-transformers; CPU)
-  MILVUS_URI       default http://milvus:19530
+  QDRANT_URL       default http://qdrant:6333
+  QDRANT_API_KEY   default "" (optional; sent as the `api-key` header when set)
   FRAME_COUNT      default 0 = auto (adapt to CPU); >0 forces a fixed count
 """
 from __future__ import annotations
@@ -43,7 +44,8 @@ from PIL import Image
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434/v1").rstrip("/")
 VLM_MODEL = os.environ.get("VLM_MODEL", "moondream:1.8b")
 CLIP_MODEL = os.environ.get("CLIP_MODEL", "clip-ViT-B-32")
-MILVUS_URI = os.environ.get("MILVUS_URI", "http://milvus:19530")
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333").rstrip("/")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 FRAME_COUNT = int(os.environ.get("FRAME_COUNT", "0"))  # 0 = auto (adapt to CPU)
 COLLECTION = "vss_clip"
 CLIP_DIM = 512  # clip-ViT-B-32
@@ -173,40 +175,40 @@ def clip_text_embed(text: str) -> Optional[list[float]]:
         return None
 
 
-# ------------------------------------------------------------------------ Milvus
-_milvus_ready = False
+# ------------------------------------------------------------------------ Qdrant
+_qdrant_ready = False
 
 
-def _milvus():
-    """Connect to Milvus and ensure the CLIP collection exists. Returns the
-    collection, or None if Milvus is unreachable."""
-    global _milvus_ready
+def _qdrant_headers(json_body: bool = False) -> dict:
+    headers = {"Content-Type": "application/json"} if json_body else {}
+    if QDRANT_API_KEY:
+        headers["api-key"] = QDRANT_API_KEY
+    return headers
+
+
+def _qdrant() -> bool:
+    """Ensure the CLIP collection exists in Qdrant. Returns True if Qdrant is
+    reachable (collection present or just created), False otherwise."""
+    global _qdrant_ready
+    if _qdrant_ready:
+        return True
     try:
-        from pymilvus import (Collection, CollectionSchema, DataType, FieldSchema,
-                              connections, utility)
-        if not _milvus_ready:
-            host = MILVUS_URI.replace("http://", "").replace("https://", "")
-            h, _, p = host.partition(":")
-            connections.connect(alias="default", host=h, port=p or "19530")
-            if not utility.has_collection(COLLECTION):
-                fields = [
-                    FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=64),
-                    FieldSchema(name="video_id", dtype=DataType.VARCHAR, max_length=64),
-                    FieldSchema(name="ts", dtype=DataType.FLOAT),
-                    FieldSchema(name="source", dtype=DataType.VARCHAR, max_length=1024),
-                    FieldSchema(name="caption", dtype=DataType.VARCHAR, max_length=4096),
-                    FieldSchema(name="thumb", dtype=DataType.VARCHAR, max_length=65535),
-                    FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=CLIP_DIM),
-                ]
-                col = Collection(COLLECTION, CollectionSchema(fields, description="VSS CLIP frame index"))
-                col.create_index("vector", {"index_type": "AUTOINDEX", "metric_type": "COSINE"})
-            _milvus_ready = True
-        col = Collection(COLLECTION)
-        col.load()
-        return col
+        r = requests.get(f"{QDRANT_URL}/collections/{COLLECTION}", headers=_qdrant_headers(), timeout=10)
+        if r.status_code == 404:
+            r = requests.put(
+                f"{QDRANT_URL}/collections/{COLLECTION}",
+                headers=_qdrant_headers(json_body=True),
+                json={"vectors": {"size": CLIP_DIM, "distance": "Cosine"}},
+                timeout=30,
+            )
+            r.raise_for_status()
+        else:
+            r.raise_for_status()
+        _qdrant_ready = True
+        return True
     except Exception as e:  # noqa: BLE001 — best-effort indexing
-        print(f"[milvus] unavailable: {e}", flush=True)
-        return None
+        print(f"[qdrant] unavailable: {e}", flush=True)
+        return False
 
 
 # ------------------------------------------------------------------------ frames
@@ -225,7 +227,7 @@ def _encode(frame, quality: int = 82) -> bytes:
 
 
 def _thumb_b64(jpeg: bytes, max_side: int = 384, quality: int = 70) -> str:
-    """A compact thumbnail (base64) small enough to store in Milvus (< 64 KB)."""
+    """A compact thumbnail (base64) small enough to store in Qdrant (< 64 KB)."""
     img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     if img is not None:
         jpeg = _encode(_resize_frame(img, max_side), quality)
@@ -389,29 +391,44 @@ def summarize(prompt: str, captions: list[str], model: str) -> str:
     return _strip_think(r.json()["choices"][0]["message"]["content"])
 
 
+def qdrant_upsert_points(points: list[dict]) -> None:
+    """Upsert points into the Qdrant collection, batched to keep requests small."""
+    for i in range(0, len(points), 64):
+        batch = points[i:i + 64]
+        try:
+            r = requests.put(
+                f"{QDRANT_URL}/collections/{COLLECTION}/points",
+                headers=_qdrant_headers(json_body=True),
+                json={"points": batch},
+                timeout=60,
+            )
+            r.raise_for_status()
+        except Exception as e:  # noqa: BLE001
+            print(f"[qdrant] insert failed: {e}", flush=True)
+
+
 def _index_async(video_id: str, items: list[tuple]) -> None:
     """Compute the CLIP image embedding + a compact thumbnail for each frame and
-    store them with metadata in Milvus, in a daemon thread so indexing never delays
+    store them with metadata in Qdrant, in a daemon thread so indexing never delays
     the streamed response. Best-effort."""
     def work():
-        col = _milvus()
-        if col is None:
+        if not _qdrant():
             return
+        points = []
         for fid, ts, source, caption_text, jpeg in items:
             vec = clip_image_embed(jpeg)
             if vec is None:
                 continue
-            try:
-                col.insert([{
-                    "id": fid, "video_id": video_id, "ts": ts, "source": source,
-                    "caption": caption_text, "thumb": _thumb_b64(jpeg), "vector": vec,
-                }])
-            except Exception as e:  # noqa: BLE001
-                print(f"[milvus] insert failed: {e}", flush=True)
-        try:
-            col.flush()
-        except Exception:  # noqa: BLE001
-            pass
+            points.append({
+                "id": str(uuid.uuid4()),
+                "vector": vec,
+                "payload": {
+                    "frame_id": fid, "video_id": video_id, "ts": ts, "source": source,
+                    "caption": caption_text, "thumb": _thumb_b64(jpeg),
+                },
+            })
+        if points:
+            qdrant_upsert_points(points)
     threading.Thread(target=work, daemon=True).start()
 
 
@@ -541,7 +558,7 @@ async def analyze(
                 summary = summarize(text_prompt, captions, vlm)
             except Exception as e:  # noqa: BLE001
                 yield line({"type": "error", "detail": f"summary failed: {e}"}); return
-            _index_async(video_id, to_index)  # CLIP embed + Milvus insert in background
+            _index_async(video_id, to_index)  # CLIP embed + Qdrant insert in background
             yield line({"type": "summary", "summary": summary, "model": vlm,
                         "indexed": True, "video_id": video_id})
             yield line({"type": "done"})
@@ -562,27 +579,32 @@ async def analyze(
 @app.post("/api/search")
 def search(query: str = Form(...), top_k: int = Form(8)):
     """Text→image semantic search: embed the query with CLIP and match it against
-    the stored frame image embeddings in Milvus. Returns frames + metadata."""
-    col = _milvus()
-    if col is None:
-        raise HTTPException(status_code=503, detail="Milvus is not available")
+    the stored frame image embeddings in Qdrant. Returns frames + metadata."""
+    if not _qdrant():
+        raise HTTPException(status_code=503, detail="Qdrant is not available")
     vec = clip_text_embed(query)
     if vec is None:
         raise HTTPException(status_code=503, detail="CLIP model unavailable")
-    res = col.search(
-        data=[vec], anns_field="vector", param={"metric_type": "COSINE"},
-        limit=max(1, min(int(top_k), 50)),
-        output_fields=["video_id", "ts", "source", "caption", "thumb"],
-    )
+    try:
+        r = requests.post(
+            f"{QDRANT_URL}/collections/{COLLECTION}/points/search",
+            headers=_qdrant_headers(json_body=True),
+            json={"vector": vec, "limit": max(1, min(int(top_k), 50)), "with_payload": True},
+            timeout=30,
+        )
+        r.raise_for_status()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"Qdrant search failed: {e}")
     hits = []
-    for hit in res[0]:
+    for hit in r.json().get("result", []):
+        payload = hit.get("payload") or {}
         hits.append({
-            "score": round(float(hit.distance), 4),
-            "video_id": hit.entity.get("video_id"),
-            "ts": hit.entity.get("ts"),
-            "source": hit.entity.get("source"),
-            "caption": hit.entity.get("caption"),
-            "thumb": hit.entity.get("thumb"),
+            "score": round(float(hit.get("score", 0.0)), 4),
+            "video_id": payload.get("video_id"),
+            "ts": payload.get("ts"),
+            "source": payload.get("source"),
+            "caption": payload.get("caption"),
+            "thumb": payload.get("thumb"),
         })
     return {"query": query, "hits": hits}
 

@@ -3,11 +3,11 @@ displayName: Fraud / AML Detection (Ollama, CPU)
 description: >-
   Financial-crime / money-laundering / anomaly detection. Airflow generates a synthetic
   fraud graph (SantanderAI/gen-fraud-graph), trains an XGBoost classifier, and indexes
-  behavioural vectors in Milvus for anomaly detection; a local LLM (Ollama, qwen2.5:1.5b)
+  behavioural vectors in Qdrant for anomaly detection; a local LLM (Ollama, qwen2.5:0.5b)
   acts as an AML analyst explaining flagged accounts. All from the SUSE Application
   Collection. With thanks to SantanderAI/gen-fraud-graph for the inspiration.
 category: anomaly-detection
-tags: [fraud, aml, airflow, xgboost, ollama, milvus, anomaly]
+tags: [fraud, aml, airflow, xgboost, ollama, qdrant, anomaly]
 blueprintFile: fraud-detection-ollama-1-0-0.yaml
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
@@ -23,13 +23,13 @@ localFrontend:
   openPath: /
   env:
     POSTGRES_URI: "postgresql://fraud:fraud@localhost:5432/fraud"
-    MILVUS_URI: "http://localhost:19530"
+    QDRANT_URL: "http://localhost:6333"
     OPENAI_BASE_URL: "http://localhost:11434/v1"
     LLM_MODEL: "{{MODEL}}"
     OPENAI_API_KEY: "EMPTY"
   portForwards:
     - {name: fraud-db, service: fraud-db, local: 5432, remote: 5432}
-    - {name: milvus, service: milvus, local: 19530, remote: 19530}
+    - {name: qdrant, service: qdrant, local: 6333, remote: 6333}
     - {name: ollama, service: ollama, local: 11434, remote: 11434}
 # In-cluster component UIs the marketplace can port-forward on demand (button
 # enabled only once the service is Ready).
@@ -41,8 +41,8 @@ modelSizes:
   envKey: LLM_MODEL
   replace: "{{MODEL}}"
   options:
-    - {id: small, label: "1.5B — faster (CPU)", model: "qwen2.5:1.5b"}
-    - {id: large, label: "3B — higher quality", model: "qwen2.5:3b"}
+    - {id: small, label: "0.5B — fastest (CPU)", model: "qwen2.5:0.5b"}
+    - {id: large, label: "0.8B — higher quality", model: "qwen3.5:0.8b"}
 # The DAGs bpm triggers sequentially from the guide (trigger-dags action) — same
 # order as the manual steps below. Each waits for the previous to finish; they can
 # still be run manually in the Airflow UI. Defaults: apache-airflow-api-server:8080,
@@ -62,7 +62,7 @@ guide:
     body: |
       In the SUSE AI Factory UI, go to **Blueprints → Fraud / AML Detection (Ollama) →
       Create AIWorkload**, choose a target **namespace**, and deploy. Wait for PostgreSQL,
-      Milvus, Ollama and Airflow to be Ready — the Airflow scheduler installs the pipeline's
+      Qdrant, Ollama and Airflow to be Ready — the Airflow scheduler installs the pipeline's
       Python libraries on first start (pandas/networkx/xgboost/gen-fraud-graph), so give it a
       few minutes. Enter the namespace you chose below.
     action: {type: namespace-input}
@@ -74,13 +74,13 @@ guide:
 
       1. `generate_fraud_dataset` — synthetic fraud graph → PostgreSQL.
       2. `engineer_and_train` — features → XGBoost → account scores + model metrics.
-      3. `flag_and_anomaly` — Milvus anomaly index → flagged accounts.
+      3. `flag_and_anomaly` — Qdrant anomaly index → flagged accounts.
 
       Raise `SCALE_FACTOR` on the blueprint for a bigger dataset.
     action: {type: trigger-dags}
   - title: Launch the investigator UI
     body: |
-      Starts `kubectl port-forward` to Postgres (5432), Milvus (19530) and Ollama (11434) and
+      Starts `kubectl port-forward` to Postgres (5432), Qdrant (6333) and Ollama (11434) and
       runs the SUSE investigator dashboard locally.
     action: {type: start-frontend}
   - title: Investigate flagged accounts

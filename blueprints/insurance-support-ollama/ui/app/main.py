@@ -6,7 +6,7 @@ A support chatbot for a (synthetic) insurance company:
     (sent to a vision model over the OpenAI-compatible API),
   * open / close support tickets — the model proposes an action (function-calling)
     and the user confirms it, which does a deterministic Postgres write,
-  * suggest SIMILAR past cases (semantic text search over Milvus, and image
+  * suggest SIMILAR past cases (semantic text search over Qdrant, and image
     similarity via CLIP) — every retrieved case is REDACTED with Presidio before
     it is shown, so one customer never sees another's PII.
 
@@ -15,7 +15,7 @@ Config (env):
   CHAT_MODEL      ""                          default model (else first advertised)
   EMBED_BASE_URL  http://localhost:8011/v1   OpenAI-compatible /embeddings
   EMBED_MODEL     nomic-embed-text
-  MILVUS_URI      http://localhost:19530
+  QDRANT_URL      http://localhost:6333
   POSTGRES_URI    postgresql://insurance:insurance@localhost:5432/insurance
   CASES_COLLECTION support_cases             (text/semantic index, built by Airflow)
   PHOTO_COLLECTION support_photos            (image similarity, populated by the UI)
@@ -50,8 +50,8 @@ VISION_MODEL = os.environ.get("VISION_MODEL", "")
 EMBED_BASE_URL = os.environ.get("EMBED_BASE_URL", "http://localhost:8011/v1").rstrip("/")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "EMPTY")
-MILVUS_URI = os.environ.get("MILVUS_URI", "http://localhost:19530").rstrip("/")
-MILVUS_TOKEN = os.environ.get("MILVUS_TOKEN", "")
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333").rstrip("/")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 POSTGRES_URI = os.environ.get("POSTGRES_URI", "postgresql://insurance:insurance@localhost:5432/insurance")
 CASES_COLLECTION = os.environ.get("CASES_COLLECTION", "support_cases")
 PHOTO_COLLECTION = os.environ.get("PHOTO_COLLECTION", "support_photos")
@@ -133,7 +133,7 @@ def pg_exec(sql: str, params=None):
         conn.close()
 
 
-# --------------------------------------------------------------------------- Embeddings + Milvus (REST v2)
+# --------------------------------------------------------------------------- Embeddings + Qdrant (REST)
 def embed(text: str) -> Optional[list[float]]:
     try:
         r = requests.post(f"{EMBED_BASE_URL}/embeddings",
@@ -146,35 +146,28 @@ def embed(text: str) -> Optional[list[float]]:
         return None
 
 
-def _milvus_headers() -> dict:
+def _qdrant_headers() -> dict:
     h = {"Content-Type": "application/json"}
-    if MILVUS_TOKEN:
-        h["Authorization"] = f"Bearer {MILVUS_TOKEN}"
+    if QDRANT_API_KEY:
+        h["api-key"] = QDRANT_API_KEY
     return h
 
 
-def _milvus_post(path: str, body: dict) -> dict:
-    r = requests.post(f"{MILVUS_URI}{path}", json=body, headers=_milvus_headers(), timeout=HTTP_TIMEOUT)
-    r.raise_for_status()
-    data = r.json()
-    if isinstance(data, dict) and data.get("code") not in (0, None):
-        raise RuntimeError(f"Milvus error on {path}: {data}")
-    return data
-
-
-def milvus_has(name: str) -> bool:
+def qdrant_has(name: str) -> bool:
     try:
-        return name in (_milvus_post("/v2/vectordb/collections/list", {}).get("data") or [])
+        r = requests.get(f"{QDRANT_URL}/collections/{name}", headers=_qdrant_headers(), timeout=HTTP_TIMEOUT)
+        return r.status_code == 200
     except Exception:  # noqa: BLE001
         return False
 
 
-def milvus_search(name: str, vector: list[float], top_k: int, output_fields: list[str]) -> list[dict]:
-    data = _milvus_post("/v2/vectordb/entities/search", {
-        "collectionName": name, "data": [vector], "limit": top_k,
-        "outputFields": output_fields, "searchParams": {"metricType": "COSINE"},
-    })
-    return data.get("data") or []
+def qdrant_search(name: str, vector: list[float], top_k: int) -> list[dict]:
+    r = requests.post(f"{QDRANT_URL}/collections/{name}/points/search",
+                      json={"vector": vector, "limit": top_k, "with_payload": True},
+                      headers=_qdrant_headers(), timeout=HTTP_TIMEOUT)
+    r.raise_for_status()
+    hits = r.json().get("result") or []
+    return [{**(h.get("payload") or {}), "distance": h.get("score", 0)} for h in hits]
 
 
 # --------------------------------------------------------------------------- CLIP (photo similarity)
@@ -200,22 +193,13 @@ def clip_image_embed(jpeg: bytes) -> Optional[list[float]]:
 
 
 def ensure_photo_collection():
-    if not milvus_has(PHOTO_COLLECTION):
-        _milvus_post("/v2/vectordb/collections/create", {
-            "collectionName": PHOTO_COLLECTION,
-            "schema": {"autoID": False, "enableDynamicField": True, "fields": [
-                {"fieldName": "id", "dataType": "VarChar", "isPrimary": True,
-                 "elementTypeParams": {"max_length": 64}},
-                {"fieldName": "vector", "dataType": "FloatVector",
-                 "elementTypeParams": {"dim": CLIP_DIM}},
-                {"fieldName": "caption", "dataType": "VarChar",
-                 "elementTypeParams": {"max_length": 4096}},
-                {"fieldName": "thumb", "dataType": "VarChar",
-                 "elementTypeParams": {"max_length": 65535}},
-            ]},
-            "indexParams": [{"fieldName": "vector", "metricType": "COSINE",
-                             "indexName": "vi", "indexType": "AUTOINDEX"}],
-        })
+    if not qdrant_has(PHOTO_COLLECTION):
+        r = requests.put(
+            f"{QDRANT_URL}/collections/{PHOTO_COLLECTION}",
+            json={"vectors": {"size": CLIP_DIM, "distance": "Cosine"}},
+            headers=_qdrant_headers(), timeout=HTTP_TIMEOUT,
+        )
+        r.raise_for_status()
 
 
 # --------------------------------------------------------------------------- Presidio redaction
@@ -375,7 +359,7 @@ def health():
         ok_pg = False
     return {
         "ok": True, "chat_endpoint": CHAT_BASE_URL, "models": list_models(),
-        "embed_model": EMBED_MODEL, "milvus": milvus_has(CASES_COLLECTION),
+        "embed_model": EMBED_MODEL, "qdrant": qdrant_has(CASES_COLLECTION),
         "cases_collection": CASES_COLLECTION, "postgres": ok_pg,
     }
 
@@ -521,14 +505,12 @@ def get_ticket(ticket_id: int):
 
 # ---- similar-case search (redacted) ----
 def semantic_cases(query: str, top_k: int) -> list[dict]:
-    if not milvus_has(CASES_COLLECTION):
+    if not qdrant_has(CASES_COLLECTION):
         return []
     vec = embed(query)
     if vec is None:
         return []
-    hits = milvus_search(CASES_COLLECTION, vec, top_k,
-                         ["subject", "body", "accident_type", "product_type",
-                          "status", "was_paid", "within_policy", "resolution"])
+    hits = qdrant_search(CASES_COLLECTION, vec, top_k)
     out = []
     for h in hits:
         out.append({
@@ -555,9 +537,9 @@ async def search_similar(top_k: int = Form(5), file: UploadFile = File(...)):
     vec = clip_image_embed(jpeg)
     if vec is None:
         raise HTTPException(status_code=503, detail="CLIP unavailable")
-    if not milvus_has(PHOTO_COLLECTION):
+    if not qdrant_has(PHOTO_COLLECTION):
         return {"cases": [], "note": "no indexed photos yet — analyse a few first"}
-    hits = milvus_search(PHOTO_COLLECTION, vec, top_k, ["caption", "thumb"])
+    hits = qdrant_search(PHOTO_COLLECTION, vec, top_k)
     return {"cases": [{"score": round(float(h.get("distance", 0)), 4),
                        "caption": redact(h.get("caption", "")),
                        "thumb": h.get("thumb", "")} for h in hits]}
@@ -575,11 +557,13 @@ async def analyze_photo(file: UploadFile = File(...), model: str = Form("")):
     if vec is not None:
         try:
             ensure_photo_collection()
-            _milvus_post("/v2/vectordb/entities/insert", {
-                "collectionName": PHOTO_COLLECTION,
-                "data": [{"id": uuid.uuid4().hex[:16], "vector": vec,
-                          "caption": caption[:4096], "thumb": _thumb_b64(jpeg)}],
-            })
+            r = requests.put(
+                f"{QDRANT_URL}/collections/{PHOTO_COLLECTION}/points",
+                json={"points": [{"id": str(uuid.uuid4()), "vector": vec,
+                                  "payload": {"caption": caption[:4096], "thumb": _thumb_b64(jpeg)}}]},
+                headers=_qdrant_headers(), timeout=HTTP_TIMEOUT,
+            )
+            r.raise_for_status()
             indexed = True
         except Exception as e:  # noqa: BLE001
             print(f"[photo index] failed: {e}", flush=True)

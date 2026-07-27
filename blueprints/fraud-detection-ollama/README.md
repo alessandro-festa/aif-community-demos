@@ -2,8 +2,8 @@
 
 A financial-crime / money-laundering / anomaly-detection blueprint. **Apache Airflow**
 generates and manipulates a synthetic fraud graph, **trains an XGBoost classifier** on the
-labelled data, and indexes behavioural feature vectors in **Milvus** for anomaly detection; a
-local SUSE-styled investigator UI uses a local **LLM (Ollama, `qwen2.5:1.5b`)** as an **AML
+labelled data, and indexes behavioural feature vectors in **Qdrant** for anomaly detection; a
+local SUSE-styled investigator UI uses a local **LLM (Ollama, `qwen2.5:0.5b`)** as an **AML
 analyst** to classify and explain flagged accounts.
 
 > **Inspired by and with thanks to [SantanderAI/gen-fraud-graph](https://github.com/SantanderAI/gen-fraud-graph)**
@@ -28,8 +28,8 @@ Blueprint CR: [`fraud-detection-ollama-1-0-0.yaml`](fraud-detection-ollama-1-0-0
 |-----------|-------|------|
 | **Apache Airflow** | `apache-airflow` `1.22.0` | orchestrates generate → train → anomaly (DAGs via git-sync) |
 | **PostgreSQL** | `postgresql` `0.6.0` (`fraud-db`) | accounts, transactions, labels, scores, flagged accounts |
-| **Milvus** | `milvus` `5.0.22` | per-account behavioural feature vectors for anomaly detection |
-| **Ollama** | `ollama` `1.55.0` | `qwen2.5:1.5b` — the AML analyst LLM, CPU |
+| **Qdrant** | `qdrant` `1.17.0` | per-account behavioural feature vectors for anomaly detection |
+| **Ollama** | `ollama` `1.55.0` | `qwen2.5:0.5b` — the AML analyst LLM, CPU |
 | **Investigator UI** | — (local) | FastAPI + SUSE dashboard in [`ui/`](ui/), runs locally |
 
 ## Pipeline (Airflow DAGs, in [`dags/`](dags/))
@@ -41,7 +41,7 @@ Blueprint CR: [`fraud-detection-ollama-1-0-0.yaml`](fraud-detection-ollama-1-0-0
    stats, high-value-edge counts, **high-value-cycle membership** via networkx), label from the
    ground-truth rings, **train XGBoost** (SMOTE for imbalance), batch-score all accounts, and
    record precision/recall/F1/AUC.
-3. **`flag_and_anomaly`** — index normalised feature vectors in Milvus, compute an anomaly
+3. **`flag_and_anomaly`** — index normalised feature vectors in Qdrant, compute an anomaly
    score (distance to nearest neighbours), and write the top **flagged accounts** (combining
    model score + anomaly + ring membership).
 4. **`clear_data`** — reset everything.
@@ -74,6 +74,6 @@ port-forwards for you → investigate flagged accounts.
   `images.airflow` at your image. Note: the published image is **arm64** (matching the sims
   cluster); rebuild for amd64 if needed.
 - **Data stores**: transactions/labels/scores in PostgreSQL (`fraud-db`), anomaly vectors in
-  Milvus. No graph database is required (ring detection runs in-DAG with networkx).
+  Qdrant. No graph database is required (ring detection runs in-DAG with networkx).
 - The XGBoost model is trained + used for batch scoring inside Airflow (results in Postgres);
   interactive scoring of new transactions is a possible future addition.
