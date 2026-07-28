@@ -16,8 +16,9 @@ from __future__ import annotations
 import pendulum
 from airflow import DAG
 from airflow.decorators import task
-from airflow.models import DagModel
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
+
+from common import airflow_unpause
 
 STAGES = ["simulate_incidents", "classify_and_load", "build_marts",
           "index_incidents", "check_compliance_alerts"]
@@ -25,11 +26,7 @@ STAGES = ["simulate_incidents", "classify_and_load", "build_marts",
 
 @task
 def unpause(dag_id: str) -> None:
-    # git-sync resets is_paused=True on every DAG-bag refresh, and TriggerDagRunOperator
-    # doesn't unpause its target — without this the triggered run sits queued forever.
-    dm = DagModel.get_dagmodel(dag_id)
-    if dm is not None:
-        dm.set_is_paused(False)
+    airflow_unpause(dag_id)
 
 
 with DAG(

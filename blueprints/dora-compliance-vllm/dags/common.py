@@ -38,6 +38,12 @@ EMBED_DIM = int(os.environ.get("EMBED_DIM", "256"))
 INCIDENTS_COLLECTION = os.environ.get("INCIDENTS_COLLECTION", "incidents")
 HTTP_TIMEOUT = 120
 
+# In-cluster Airflow API server (same Service the UI reaches via its "airflow" port-forward),
+# used by run_pipeline to unpause each stage DAG before triggering it.
+AIRFLOW_API_URL = os.environ.get("AIRFLOW_API_URL", "http://apache-airflow-api-server:8080").rstrip("/")
+AIRFLOW_USER = os.environ.get("AIRFLOW_USER", "admin")
+AIRFLOW_PASSWORD = os.environ.get("AIRFLOW_PASSWORD", "admin")
+
 # ICT third-party providers the incidents may involve, with a coarse concentration tier.
 # "critical" providers carry more systemic (concentration) risk under DORA.
 VENDORS = {
@@ -196,3 +202,23 @@ def qdrant_insert(rows: list[dict], name: str = INCIDENTS_COLLECTION) -> None:
                    "payload": {k: v for k, v in r.items() if k not in ("id", "vector")}}
                   for r in rows[i:i + batch]]
         _qdrant_request("PUT", f"/collections/{name}/points", {"points": points})
+
+
+# --------------------------------------------------------------------------- #
+# Airflow REST API (Airflow 3 task processes have no direct DB/ORM access, so
+# unpausing a DAG from within a task must go through the API, not the ORM)
+# --------------------------------------------------------------------------- #
+def airflow_unpause(dag_id: str) -> None:
+    """Clear a DAG's is_paused flag. git-sync resets is_paused=True on every DAG-bag
+    refresh, and TriggerDagRunOperator never unpauses its target — without this, a
+    stage DAG triggered by run_pipeline can sit queued forever."""
+    token = requests.post(f"{AIRFLOW_API_URL}/auth/token",
+                          json={"username": AIRFLOW_USER, "password": AIRFLOW_PASSWORD},
+                          timeout=HTTP_TIMEOUT)
+    token.raise_for_status()
+    access_token = token.json().get("access_token") or token.json().get("jwt_token", "")
+    r = requests.patch(f"{AIRFLOW_API_URL}/api/v2/dags/{dag_id}?update_mask=is_paused",
+                       json={"is_paused": False},
+                       headers={"Authorization": f"Bearer {access_token}"},
+                       timeout=HTTP_TIMEOUT)
+    r.raise_for_status()
