@@ -1,0 +1,128 @@
+# Rancher AI Assistant ("Liz") with vLLM (GPU).
+#
+# GPU sibling of rancher-ai-liz-ollama, following this catalog's usual -ollama (CPU) /
+# -vllm (GPU) pairing. Component shape adapted from Edu Minguez's example Blueprint:
+# https://github.com/e-minguez/aif/blob/liz-blueprint/examples/rancher-ai-assistant-with-ollama-1.0.0.yaml
+# — his example bundled Ollama for both LLM serving and CPU-vs-GPU model sizing; here the
+# LLM-serving component is swapped for vLLM (this catalog's standard GPU inference engine,
+# already proven for tool-calling via the same --enable-auto-tool-choice/hermes flags used
+# by dora-compliance-vllm and friends) instead of running Ollama with its GPU toggle.
+#
+# It deploys:
+#   - vLLM, serving Qwen/Qwen2.5-7B-Instruct on a single GPU with tool-calling enabled
+#   - the rancher-ai-agent (Liz agent) chart, pointed at vLLM's OpenAI-compatible API
+#   - the rancher-ai-ui (Liz UI extension) chart, which registers the UIPlugin CR that
+#     surfaces the assistant inside the Rancher UI
+#
+# IMPORTANT -- chart source for rancher-ai-agent: the official chart lives at
+# oci://registry.suse.com/rancher/charts, tagged "109.0.1_up1.0.2" (Helm's OCI-safe
+# encoding of "+" -> "_" for semver build metadata). Fleet's HelmOp -- what AI Factory
+# uses to deploy Blueprint components -- cannot resolve that tag at all, in any form
+# ("+", "_", or plain semver all fail): https://github.com/rancher/fleet/issues/5410.
+# This is a confirmed upstream Fleet bug, not something fixable from this blueprint.
+# Until it's fixed, this blueprint pulls rancher-ai-agent from `liz-charts-obs`, an
+# UNOFFICIAL, community-rebuilt mirror (courtesy of Edu Minguez) that re-tags the same
+# chart content with a clean semver ("v1.0.2") Fleet can parse. It is NOT a
+# SUSE-supported artifact. For production, install the Prime chart from
+# oci://registry.suse.com/rancher/charts out-of-band instead, or once the Fleet issue is
+# fixed, repoint the `liz-charts-obs` ClusterRepo at the official registry and bump
+# chartVersion back to the real tag.
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: rancher-ai-liz-vllm
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: rancher-ai-liz-vllm-1-0-0
+spec:
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
+  displayName: Rancher AI Assistant (Liz, vLLM GPU)
+  version: 1.0.0
+  description: |
+    Deploys Rancher AI Assistant ("Liz") on GPU: vLLM serves Qwen/Qwen2.5-7B-Instruct with
+    tool-calling enabled, the rancher-ai-agent chart talks to it over vLLM's
+    OpenAI-compatible API, and the rancher-ai-ui extension surfaces the chat panel in the
+    Rancher UI. Requires a real GPU node. Install on the cluster where Rancher itself runs.
+
+    WORKLOAD NAMESPACE: set the AIWorkload targetNamespace to cattle-ai-agent-system.
+    Each component also pins its own namespace, so vLLM and the Liz agent land in
+    cattle-ai-agent-system and the UI extension in cattle-ui-plugin-system regardless of
+    the workload value; matching the workload namespace keeps everything aligned.
+
+    PREREQUISITES: Rancher Prime/Community Manager 2.13+, cluster-admin (Liz installs
+    CRDs), Kubernetes >=1.31.4 <1.35, Rancher UI-extensions >=3.0.0 <4.0.0, a default
+    StorageClass, a GPU node with the NVIDIA GPU Operator installed, and the
+    application-collection ClusterRepo + credentials (standard AI Factory Settings) for
+    the vLLM chart.
+
+    CHART SOURCE CAVEAT: rancher-ai-agent is pulled from `liz-charts-obs`, an UNOFFICIAL
+    community mirror -- see the top-of-file comment and README for why (a confirmed Fleet
+    bug prevents resolving the official chart's version tag).
+
+    NOTES:
+    - Liz's init fails until vLLM is Ready; it retries automatically, or force it with:
+      kubectl rollout restart deployment rancher-ai-agent -n cattle-ai-agent-system
+    - vLLM's --enable-auto-tool-choice/--tool-call-parser=hermes flags are what make
+      Qwen2.5-Instruct's tool calls parseable by Liz's agent loop.
+    - The UI extension chart is served from ui-plugin-charts consumed as an HTTP Helm
+      repo. If the HelmOp cannot pull from raw.githubusercontent.com, install
+      rancher-ai-ui out-of-band instead (git ClusterRepo rancher-ui-plugins + UIPlugin,
+      or via Rancher -> Extensions).
+  components:
+  # ----------------------------------------------------------------------- #
+  # vLLM — GPU LLM backend for Liz's agents, Qwen2.5-7B-Instruct, tool-calling enabled.
+  # ----------------------------------------------------------------------- #
+  - chartName: vllm
+    chartRepo: application-collection
+    chartVersion: 0.1.10
+    targetNamespace: cattle-ai-agent-system
+    values:
+      servingEngineSpec:
+        runtimeClassName: nvidia
+        modelSpec:
+          - name: qwen25-7b
+            registry: dp.apps.rancher.io
+            repository: containers/vllm-openai
+            tag: "0.19.0-5.29"
+            modelURL: Qwen/Qwen2.5-7B-Instruct
+            replicaCount: 1
+            requestCPU: 6
+            requestMemory: "24Gi"
+            requestGPU: 1
+            pvcStorage: "60Gi"
+            vllmConfig:
+              maxModelLen: 32768
+              dtype: bfloat16
+              gpuMemoryUtilization: 0.9
+              extraArgs:
+                - "--enable-auto-tool-choice"
+                - "--tool-call-parser=hermes"
+      routerSpec:
+        enableRouter: true
+        serviceType: ClusterIP
+        containerPort: 8000
+        servicePort: 80
+  # ----------------------------------------------------------------------- #
+  # Liz agent: the rancher-ai-agent chart. Runs the assistant backend and talks to vLLM
+  # over its OpenAI-compatible API (activeLlm: openai, pointed at the in-cluster router).
+  # Pulled from liz-charts-obs, an UNOFFICIAL community mirror -- see the top-of-file
+  # comment. NOT SUSE-supported; for production install the Prime chart out-of-band.
+  # ----------------------------------------------------------------------- #
+  - chartName: rancher-ai-agent
+    chartRepo: liz-charts-obs
+    chartVersion: "v1.0.2"
+    targetNamespace: cattle-ai-agent-system
+    values:
+      activeLlm: "openai"
+      openaiUrl: "http://vllm-router-service/v1"
+      openaiApiKey: "EMPTY"
+      openaiLlmModel: "Qwen/Qwen2.5-7B-Instruct"
+  # ----------------------------------------------------------------------- #
+  # Liz UI extension: the rancher-ai-ui chart, which creates the UIPlugin CR that
+  # surfaces the assistant inside the Rancher UI. Identical to the Ollama variant.
+  # ----------------------------------------------------------------------- #
+  - chartName: rancher-ai-ui
+    chartRepo: rancher-ui-plugins-http
+    chartVersion: "1.0.1"
+    targetNamespace: cattle-ui-plugin-system
+    values: {}

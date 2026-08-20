@@ -1,0 +1,241 @@
+# Rancher AI Assistant ("Liz") with Ollama.
+#
+# Adapted from Edu Minguez's example Blueprint for the SUSE AI Factory operator:
+# https://github.com/e-minguez/aif/blob/liz-blueprint/examples/rancher-ai-assistant-with-ollama-1.0.0.yaml
+# Credit for the working component/values shape (in particular the community-mirror
+# workaround below) goes to Edu Minguez.
+#
+# It deploys Rancher AI Assistant end-to-end:
+#   - Ollama, preloaded with a micro tool-calling model (qwen2.5:1.5b, CPU inference).
+#     This is the CPU/micro variant; a future GPU variant of this blueprint would swap
+#     in a larger model such as gpt-oss:20b (Edu's original example) for better
+#     tool-calling quality.
+#   - the rancher-ai-agent (Liz agent) chart
+#   - the rancher-ai-ui (Liz UI extension) chart, which registers the UIPlugin CR
+#     that surfaces the assistant inside the Rancher UI
+#
+# IMPORTANT -- chart source for rancher-ai-agent: the official chart lives at
+# oci://registry.suse.com/rancher/charts, tagged "109.0.1_up1.0.2" (Helm's OCI-safe
+# encoding of "+" -> "_" for semver build metadata). Fleet's HelmOp -- what AI Factory
+# uses to deploy Blueprint components -- cannot resolve that tag at all, in any form
+# ("+", "_", or plain semver all fail): https://github.com/rancher/fleet/issues/5410.
+# This is a confirmed upstream Fleet bug, not something fixable from this blueprint.
+# Until it's fixed, this blueprint pulls rancher-ai-agent from `liz-charts-obs`, an
+# UNOFFICIAL, community-rebuilt mirror (courtesy of Edu Minguez) that re-tags the same
+# chart content with a clean semver ("v1.0.2") Fleet can parse. It is NOT a
+# SUSE-supported artifact. For production, install the Prime chart from
+# oci://registry.suse.com/rancher/charts out-of-band instead, or once the Fleet issue
+# is fixed, repoint the `liz-charts-obs` ClusterRepo at the official registry and bump
+# chartVersion back to the real tag.
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: Blueprint
+metadata:
+  labels:
+    ai-factory.suse.com/blueprint-name: rancher-ai-liz-ollama
+    ai-factory.suse.com/blueprint-version: 1.0.0
+  name: rancher-ai-liz-ollama-1-0-0
+spec:
+  source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
+  displayName: Rancher AI Assistant (Liz, Ollama)
+  version: 1.0.0
+  description: |
+    Deploys Rancher AI Assistant ("Liz"): the rancher-ai-agent chart, the rancher-ai-ui
+    extension, and an Ollama instance preloaded with a micro tool-calling model
+    (qwen2.5:1.5b, CPU inference). Install on the cluster where Rancher itself runs.
+
+    This is the CPU/micro variant, sized to run without a GPU or heavy RAM headroom. A
+    future GPU variant of this blueprint would swap in a larger model (e.g. gpt-oss:20b)
+    for better tool-calling quality.
+
+    WORKLOAD NAMESPACE: set the AIWorkload targetNamespace to cattle-ai-agent-system.
+    Each component also pins its own namespace, so Ollama and the Liz agent land in
+    cattle-ai-agent-system and the UI extension in cattle-ui-plugin-system regardless
+    of the workload value; matching the workload namespace keeps everything aligned.
+
+    PREREQUISITES: Rancher Prime/Community Manager 2.13+, cluster-admin (Liz installs
+    CRDs), Kubernetes >=1.31.4 <1.35, Rancher UI-extensions >=3.0.0 <4.0.0, a default
+    StorageClass (Ollama persists the pulled model), and the application-collection
+    ClusterRepo + credentials (standard AI Factory Settings) for the Ollama chart.
+
+    CHART SOURCE CAVEAT: rancher-ai-agent is pulled from `liz-charts-obs`, an
+    UNOFFICIAL community mirror -- see the top-of-file comment and README for why
+    (a confirmed Fleet bug prevents resolving the official chart's version tag).
+
+    NOTES:
+    - Liz's agents rely on function/tool calling; qwen2.5:1.5b is fast on CPU but
+      tool-calling reliability at this size is worth a spot-check once it's running.
+    - Liz's init fails until the Ollama model exists; it retries automatically, or force
+      it with: kubectl rollout restart deployment rancher-ai-agent -n cattle-ai-agent-system
+    - The UI extension chart is served from ui-plugin-charts consumed as an HTTP Helm
+      repo. If the HelmOp cannot pull from raw.githubusercontent.com, install
+      rancher-ai-ui out-of-band instead (git ClusterRepo rancher-ui-plugins + UIPlugin,
+      or via Rancher -> Extensions).
+  components:
+  # ----------------------------------------------------------------------- #
+  # Ollama — local LLM backend for Liz's agents, CPU, qwen2.5:1.5b (micro).
+  # ----------------------------------------------------------------------- #
+  - chartName: ollama
+    chartRepo: application-collection
+    chartVersion: 1.55.0
+    targetNamespace: cattle-ai-agent-system
+    values:
+      affinity: {}
+      autoscaling:
+        enabled: false
+        maxReplicas: 100
+        minReplicas: 1
+        targetCPUUtilizationPercentage: 80
+      deployment:
+        labels: {}
+      extraArgs: []
+      extraEnv: []
+      extraEnvFrom: []
+      extraObjects: []
+      # Pin the service name so cross-component URLs don't depend on the Helm
+      # release name (the operator derives it from the chart name). The Liz agent
+      # reaches this as http://ollama:11434 (namespace-relative short name).
+      fullnameOverride: ollama
+      global:
+        imagePullSecrets: []
+        imageRegistry: ""
+      hostIPC: false
+      hostNetwork: false
+      hostPID: false
+      image:
+        pullPolicy: IfNotPresent
+        registry: dp.apps.rancher.io
+        repository: containers/ollama
+        tag: 0.21.2-11.48
+      imagePullSecrets: []
+      ingress:
+        annotations: {}
+        className: ""
+        enabled: false
+        hosts:
+        - host: ollama.local
+          paths:
+          - path: /
+            pathType: Prefix
+        tls: []
+      initContainers: []
+      knative:
+        annotations: {}
+        containerConcurrency: 0
+        enabled: false
+        idleTimeoutSeconds: 300
+        modelBootstrap:
+          ttlSecondsAfterFinished: 300
+        responseStartTimeoutSeconds: 300
+        timeoutSeconds: 300
+      lifecycle: {}
+      livenessProbe:
+        enabled: true
+        failureThreshold: 30
+        initialDelaySeconds: 120
+        path: /
+        periodSeconds: 10
+        successThreshold: 1
+        timeoutSeconds: 5
+      nameOverride: ""
+      namespaceOverride: ""
+      nodeSelector: {}
+      ollama:
+        gpu:
+          draDriverClass: gpu.nvidia.com
+          draEnabled: false
+          draExistingClaimTemplate: ""
+          enabled: false
+          mig:
+            devices: {}
+            enabled: false
+          number: 1
+          nvidiaResource: nvidia.com/gpu
+          type: nvidia
+        insecure: false
+        models:
+          clean: false
+          create: []
+          pull:
+          - qwen2.5:1.5b
+          run:
+          - qwen2.5:1.5b
+        mountPath: ""
+        port: 11434
+      persistentVolume:
+        accessModes:
+        - ReadWriteOnce
+        annotations: {}
+        enabled: true
+        existingClaim: ""
+        size: 20Gi
+        storageClass: ""
+        subPath: ""
+        volumeMode: ""
+        volumeName: ""
+      podAnnotations: {}
+      podLabels: {}
+      podSchedulerName: ""
+      podSecurityContext: {}
+      priorityClassName: ""
+      readinessProbe:
+        enabled: true
+        failureThreshold: 30
+        initialDelaySeconds: 60
+        path: /
+        periodSeconds: 5
+        successThreshold: 1
+        timeoutSeconds: 3
+      replicaCount: 1
+      resources:
+        limits: {}
+        requests: {}
+      runtimeClassName: ""
+      securityContext: {}
+      service:
+        annotations: {}
+        ipFamilies: []
+        ipFamilyPolicy: ""
+        labels: {}
+        loadBalancerIP: null
+        nodePort: 31434
+        port: 11434
+        type: ClusterIP
+      serviceAccount:
+        annotations: {}
+        automount: true
+        create: true
+        name: ""
+      terminationGracePeriodSeconds: 120
+      tests:
+        annotations: {}
+        enabled: true
+        labels: {}
+      tolerations: []
+      topologySpreadConstraints: {}
+      updateStrategy:
+        type: Recreate
+      volumeMounts: []
+      volumes: []
+  # ----------------------------------------------------------------------- #
+  # Liz agent: the rancher-ai-agent chart. Runs the assistant backend and talks to
+  # Ollama over the OpenAI-compatible/Ollama API.
+  # Pulled from liz-charts-obs, an UNOFFICIAL community mirror -- see the top-of-file
+  # comment. NOT SUSE-supported; for production install the Prime chart out-of-band.
+  # ----------------------------------------------------------------------- #
+  - chartName: rancher-ai-agent
+    chartRepo: liz-charts-obs
+    chartVersion: "v1.0.2"
+    targetNamespace: cattle-ai-agent-system
+    values:
+      activeLlm: "ollama"
+      ollamaUrl: "http://ollama:11434"
+      ollamaLlmModel: "qwen2.5:1.5b"
+  # ----------------------------------------------------------------------- #
+  # Liz UI extension: the rancher-ai-ui chart, which creates the UIPlugin CR that
+  # surfaces the assistant inside the Rancher UI.
+  # ----------------------------------------------------------------------- #
+  - chartName: rancher-ai-ui
+    chartRepo: rancher-ui-plugins-http
+    chartVersion: "1.0.1"
+    targetNamespace: cattle-ui-plugin-system
+    values: {}

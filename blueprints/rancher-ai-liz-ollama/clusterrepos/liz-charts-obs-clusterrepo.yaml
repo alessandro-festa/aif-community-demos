@@ -1,0 +1,13 @@
+# UNOFFICIAL, community-rebuilt mirror of the rancher-ai-agent chart, re-tagged with a
+# clean semver (v1.0.2). Works around https://github.com/rancher/fleet/issues/5410 --
+# Fleet's HelmOp cannot resolve the official Prime OCI tag "109.0.1_up1.0.2" (Helm's
+# "+" -> "_" OCI tag-safe encoding of "109.0.1+up1.0.2"). Not SUSE-supported; for
+# production, install the Prime chart from oci://registry.suse.com/rancher/charts
+# out-of-band, or repoint this ClusterRepo at your own mirror. Mirror + example
+# blueprint courtesy of Edu Minguez (https://github.com/e-minguez/aif).
+apiVersion: catalog.cattle.io/v1
+kind: ClusterRepo
+metadata:
+  name: liz-charts-obs
+spec:
+  url: oci://registry.opensuse.org/home/eminguez/charts/images

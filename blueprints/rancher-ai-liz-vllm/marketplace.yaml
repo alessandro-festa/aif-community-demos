@@ -1,0 +1,64 @@
+id: rancher-ai-liz-vllm
+displayName: Rancher AI Assistant (Liz, vLLM GPU)
+description: >-
+  Installs Rancher AI Assistant ("Liz") on GPU: the rancher-ai-agent backend, the
+  rancher-ai-ui extension (the chat panel inside the Rancher UI), and vLLM serving
+  Qwen2.5-7B-Instruct with tool-calling enabled. Liz's three built-in agents (Rancher,
+  Continuous Delivery, Cluster Provisioning) are enabled by default and answer using that
+  GPU-served model. Requires a real GPU node. Targets the Rancher management (local)
+  cluster only. Component shape adapted from Edu Minguez's example blueprint
+  (github.com/e-minguez/aif) — see this blueprint's README for the community-mirror
+  caveat that makes automated install possible today.
+category: platform
+tags: [rancher, ai-assistant, liz, vllm, gpu, agents]
+blueprintFile: rancher-ai-liz-vllm-1-0-0.yaml
+prerequisites:
+  - {id: aif,     label: "SUSE AI Factory (Blueprint CRD)", kind: crd,       name: blueprints.ai-factory.suse.com}
+  - {id: sc,      label: "Default StorageClass",            kind: default-storageclass}
+  - {id: certm,   label: "cert-manager",                    kind: namespace, name: cert-manager}
+  - {id: rancher, label: "Rancher management cluster",      kind: namespace, name: cattle-system}
+  - {id: gpuop,   label: "GPU Operator",                    kind: namespace, name: gpu-operator}
+# liz-charts-obs: UNOFFICIAL community mirror of rancher-ai-agent (Edu Minguez), needed
+# because Fleet's HelmOp can't resolve the official chart's OCI tag (rancher/fleet#5410).
+# rancher-ui-plugins-http: HTTP mirror of Rancher's ui-plugin-charts repo, for the Liz UI
+# extension chart. Both applied before the Blueprint CR.
+clusterResources:
+  - clusterrepos/liz-charts-obs-clusterrepo.yaml
+  - clusterrepos/rancher-ui-plugins-http-clusterrepo.yaml
+guide:
+  - title: Import the blueprint
+    body: |
+      Registers the two ClusterRepos (the community chart mirror for rancher-ai-agent,
+      and the UI-plugin repo for the Liz extension) and applies the Rancher AI Assistant
+      (Liz) Blueprint CR to the selected cluster. This adds it to the SUSE AI Factory
+      catalog — it does not deploy anything yet.
+    action: {type: import}
+  - title: Create the AIWorkload (SUSE AI Factory UI)
+    body: |
+      In the SUSE AI Factory UI, go to **Blueprints → Rancher AI Assistant (Liz, vLLM
+      GPU) → Create AIWorkload**.
+
+      > **Target namespace must be `cattle-ai-agent-system`.** Each component also pins
+      > its own namespace (vLLM + rancher-ai-agent to `cattle-ai-agent-system`, the UI
+      > extension to `cattle-ui-plugin-system`) — matching the workload namespace keeps
+      > everything aligned. Type it in literally, don't accept a different default.
+
+      Deploy, then wait for **vllm** and **rancher-ai-agent** to be Ready — the pod needs
+      a GPU-schedulable node; check `kubectl get pods -n cattle-ai-agent-system` if it's
+      stuck Pending. Enter `cattle-ai-agent-system` below so this is on record for the
+      rest of the guide.
+    action: {type: namespace-input}
+  - title: Reload the Rancher UI
+    body: |
+      The rancher-ai-ui component registers a UIPlugin, which needs one browser reload
+      to show up. Once the AIWorkload is Ready, refresh the Rancher UI (a **Reload**
+      banner usually appears at the top of the page — click it, or just refresh).
+  - title: Chat with Liz
+    body: |
+      Open the AI Assistant panel (top bar of the Rancher UI). The three built-in agents —
+      **Rancher**, **Continuous Delivery**, **Cluster Provisioning** — are already enabled
+      and answer using the GPU-served Qwen2.5-7B-Instruct model. Try asking each one
+      something in its domain, e.g. *"what clusters do I have?"* (Rancher), *"list my
+      Fleet bundles"* (Continuous Delivery), or *"what machine pools exist?"* (Cluster
+      Provisioning) — tool-calling should be noticeably more reliable than the CPU/micro
+      variant.

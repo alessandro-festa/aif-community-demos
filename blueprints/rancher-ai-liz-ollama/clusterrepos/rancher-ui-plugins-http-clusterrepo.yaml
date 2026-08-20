@@ -1,0 +1,11 @@
+# HTTP-backed mirror of Rancher's official ui-plugin-charts repo, used to install the
+# rancher-ai-ui chart (the Liz UI extension, surfaced via a UIPlugin CR). Named
+# distinctly from the built-in "rancher-ui-plugins" git-backed ClusterRepo to avoid a
+# name collision. Courtesy of Edu Minguez's example blueprint
+# (https://github.com/e-minguez/aif).
+apiVersion: catalog.cattle.io/v1
+kind: ClusterRepo
+metadata:
+  name: rancher-ui-plugins-http
+spec:
+  url: https://raw.githubusercontent.com/rancher/ui-plugin-charts/4.31.0
