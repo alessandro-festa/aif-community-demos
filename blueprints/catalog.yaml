@@ -1,0 +1,47 @@
+apiVersion: ai-factory.suse.com/v1alpha1
+kind: BlueprintCatalog
+metadata:
+  name: aif-community-demos
+spec:
+  displayName: SUSE AI Factory Community Blueprints
+  description: Community demo blueprints for SUSE AI Factory (aif-community-demos).
+  categories: [anomaly-detection, customer-support, data-engineering, finops, governance, healthcare, media, platform, safety, security]
+  blueprints:
+    - name: airflow-genai-rag-1-0-0
+      file: airflow-genai-rag/airflow-genai-rag-1-0-0.yaml
+    - name: data-governance-ollama-1-0-0
+      file: data-governance-ollama/data-governance-ollama-1-0-0.yaml
+    - name: data-governance-vllm-1-0-0
+      file: data-governance-vllm/data-governance-vllm-1-0-0.yaml
+    - name: dora-compliance-ollama-1-0-0
+      file: dora-compliance-ollama/dora-compliance-ollama-1-0-0.yaml
+    - name: dora-compliance-vllm-1-0-0
+      file: dora-compliance-vllm/dora-compliance-vllm-1-0-0.yaml
+    - name: finops-multimodel-ollama-1-0-0
+      file: finops-multimodel-ollama/finops-multimodel-ollama-1-0-0.yaml
+    - name: finops-multimodel-vllm-1-0-0
+      file: finops-multimodel-vllm/finops-multimodel-vllm-1-0-0.yaml
+    - name: fraud-detection-ollama-1-0-0
+      file: fraud-detection-ollama/fraud-detection-ollama-1-0-0.yaml
+    - name: fraud-detection-vllm-1-0-0
+      file: fraud-detection-vllm/fraud-detection-vllm-1-0-0.yaml
+    - name: insurance-support-ollama-1-0-0
+      file: insurance-support-ollama/insurance-support-ollama-1-0-0.yaml
+    - name: insurance-support-vllm-1-0-0
+      file: insurance-support-vllm/insurance-support-vllm-1-0-0.yaml
+    - name: litellm-guardrails-1-0-0
+      file: litellm-guardrails/litellm-guardrails-1-0-0.yaml
+    - name: rancher-ai-liz-ollama-1-0-0
+      file: rancher-ai-liz-ollama/rancher-ai-liz-ollama-1-0-0.yaml
+    - name: rancher-ai-liz-vllm-1-0-0
+      file: rancher-ai-liz-vllm/rancher-ai-liz-vllm-1-0-0.yaml
+    - name: suse-vss-minimal-1-0-0
+      file: suse-vss/suse-vss-minimal-1-0-0.yaml
+    - name: visiongpt-ollama-1-0-0
+      file: visiongpt-ollama/visiongpt-ollama-1-0-0.yaml
+    - name: visiongpt-vllm-1-0-0
+      file: visiongpt-vllm/visiongpt-vllm-1-0-0.yaml
+    - name: xray-copilot-ollama-1-0-0
+      file: xray-copilot-ollama/xray-copilot-ollama-1-0-0.yaml
+    - name: xray-copilot-vllm-1-0-0
+      file: xray-copilot-vllm/xray-copilot-vllm-1-0-0.yaml

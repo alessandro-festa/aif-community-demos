@@ -8,7 +8,7 @@ description: >-
   Collection. With thanks to SantanderAI/gen-fraud-graph for the inspiration.
 category: anomaly-detection
 tags: [fraud, aml, airflow, xgboost, ollama, qdrant, anomaly]
-blueprintFile: fraud-detection-ollama-1-0-0.yaml
+blueprint: fraud-detection-ollama-1-0-0
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
   - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}

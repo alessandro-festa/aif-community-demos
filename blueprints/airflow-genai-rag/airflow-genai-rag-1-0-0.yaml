@@ -14,7 +14,7 @@ metadata:
 #      (base model + SYSTEM persona + few-shot messages) and `ollama create` a
 #      custom model tag. This is the CPU-friendly, no-GPU analogue of the
 #      original's OpenAI hosted fine-tuning.
-# A local FastAPI + SUSE-styled demo UI (blueprints/airflow-genai-rag/ui) then does
+# A local FastAPI + SUSE-styled demo UI (assets/airflow-genai-rag/ui) then does
 # RAG: embed a topic -> Qdrant search -> generate a grounded post with the custom model.
 #
 # All three components come from the SUSE Application Collection. The Airflow DAGs
@@ -50,7 +50,7 @@ spec:
       * Reach the Airflow UI via the `airflow-genai` ingress host (add a DNS / hosts
         entry to the cluster ingress). Trigger `ingest_knowledge_base`, then
         `customize_model`.
-      * Run the demo UI locally — see blueprints/airflow-genai-rag/README.md.
+      * Run the demo UI locally — see assets/airflow-genai-rag/README.md.
   components:
   # ----------------------------------------------------------------------------
   # Ollama — local LLM inference (chat + embeddings), CPU only.
@@ -141,7 +141,7 @@ spec:
           rev: HEAD
           depth: 1
           # DAGs live under this path within the repo.
-          subPath: blueprints/airflow-genai-rag/dags
+          subPath: assets/airflow-genai-rag/dags
           period: 30s
       # In-cluster service endpoints the DAGs read from (see dags/*.py).
       env:

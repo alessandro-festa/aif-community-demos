@@ -10,7 +10,7 @@ description: >-
   Chirag-Kathuria-009/DORA-Pipeline.
 category: data-engineering
 tags: [dora, compliance, airflow, qdrant, agent, ollama, regtech]
-blueprintFile: dora-compliance-ollama-1-0-0.yaml
+blueprint: dora-compliance-ollama-1-0-0
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
   - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}

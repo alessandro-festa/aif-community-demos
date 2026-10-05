@@ -7,7 +7,7 @@ description: >-
   score + short reason at a selectable sensitivity.
 category: safety
 tags: [visiongpt, ollama, moondream, vision, cpu]
-blueprintFile: visiongpt-ollama-1-0-0.yaml
+blueprint: visiongpt-ollama-1-0-0
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
   - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}

@@ -7,7 +7,7 @@ description: >-
   SUSE-styled UI generates grounded posts via RAG.
 category: data-engineering
 tags: [airflow, ollama, qdrant, rag]
-blueprintFile: airflow-genai-rag-1-0-0.yaml
+blueprint: airflow-genai-rag-1-0-0
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
   - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}

@@ -8,7 +8,7 @@ description: >-
   removed) with Presidio. Chat + vision via Ollama (qwen2.5vl). Demo only.
 category: customer-support
 tags: [customer-support, insurance, chatbot, airflow, postgres, qdrant, presidio, ollama, cpu]
-blueprintFile: insurance-support-ollama-1-0-0.yaml
+blueprint: insurance-support-ollama-1-0-0
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
   - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}

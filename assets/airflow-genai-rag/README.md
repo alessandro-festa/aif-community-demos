@@ -68,7 +68,7 @@ dags:
     repo: https://github.com/<you>/<repo>.git   # <-- your public repo
     branch: main
     ref: main
-    subPath: blueprints/airflow-genai-rag/dags  # <-- path to dags/ in that repo
+    subPath: assets/airflow-genai-rag/dags  # <-- path to dags/ in that repo
 ```
 
 > The committed default points at `https://github.com/SUSE/aif-blueprints.git`

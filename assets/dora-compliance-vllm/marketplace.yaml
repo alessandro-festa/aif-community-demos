@@ -10,7 +10,7 @@ description: >-
   Classifier faithful to Chirag-Kathuria-009/DORA-Pipeline.
 category: data-engineering
 tags: [dora, compliance, airflow, qdrant, agent, vllm, gpu, regtech]
-blueprintFile: dora-compliance-vllm-1-0-0.yaml
+blueprint: dora-compliance-vllm-1-0-0
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
   - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}

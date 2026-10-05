@@ -130,7 +130,7 @@ spec:
       # gen-fraud-graph). Installing at pod start via _PIP_ADDITIONAL_REQUIREMENTS was
       # too slow to finish before Fleet re-reconciled the migration pod, so it never
       # converged — baking the deps fixes that (pods start instantly). Build recipe:
-      # blueprints/fraud-detection-ollama/airflow-image/Dockerfile.
+      # assets/fraud-detection-ollama/airflow-image/Dockerfile.
       images:
         airflow:
           repository: alessandro-festa/fraud-airflow
@@ -145,7 +145,7 @@ spec:
           ref: main
           rev: HEAD
           depth: 1
-          subPath: blueprints/fraud-detection-ollama/dags
+          subPath: assets/fraud-detection-ollama/dags
           period: 30s
       env:
       - name: POSTGRES_URI

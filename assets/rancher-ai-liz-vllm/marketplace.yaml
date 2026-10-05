@@ -11,7 +11,7 @@ description: >-
   caveat that makes automated install possible today.
 category: platform
 tags: [rancher, ai-assistant, liz, vllm, gpu, agents]
-blueprintFile: rancher-ai-liz-vllm-1-0-0.yaml
+blueprint: rancher-ai-liz-vllm-1-0-0
 prerequisites:
   - {id: aif,     label: "SUSE AI Factory (Blueprint CRD)", kind: crd,       name: blueprints.ai-factory.suse.com}
   - {id: sc,      label: "Default StorageClass",            kind: default-storageclass}

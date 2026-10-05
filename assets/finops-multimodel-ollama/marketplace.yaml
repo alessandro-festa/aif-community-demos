@@ -1,21 +1,19 @@
-id: finops-multimodel-vllm
-displayName: FinOps Multi-Model Gateway (vLLM, GPU)
+id: finops-multimodel-ollama
+displayName: FinOps Multi-Model Gateway (Ollama, CPU)
 description: >-
-  FinOps for a guarded, multi-model LLM gateway. A LiteLLM proxy serves three Qwen
-  models (vLLM on GPU) at different per-token prices with guardrails; two cost planes
-  are reconciled in Grafana — TOKEN spend (LiteLLM OSS spend logs → a Prometheus
-  exporter, per model / team / virtual key) and INFRASTRUCTURE cost (OpenCost →
-  Prometheus, incl. GPU). Airflow creates per-team virtual keys + budgets, fires
-  synthetic multi-model traffic, and backfills synthetic history into Prometheus. Chat
-  runs in a custom local UI wired to LiteLLM. Requires GPU node(s).
+  FinOps for a guarded, multi-model LLM gateway. A LiteLLM proxy serves three Ollama
+  models at different per-token prices with guardrails; two cost planes are reconciled
+  in Grafana — TOKEN spend (LiteLLM OSS spend logs → a Prometheus exporter, per model /
+  team / virtual key) and INFRASTRUCTURE cost (OpenCost → Prometheus). Airflow creates
+  per-team virtual keys + budgets, fires synthetic multi-model traffic, and backfills
+  synthetic history into Prometheus. Chat runs in a custom local UI wired to LiteLLM.
 category: finops
-tags: [finops, opencost, litellm, guardrails, prometheus, grafana, airflow, chargeback, multi-model, cost, vllm, gpu]
-blueprintFile: finops-multimodel-vllm-1-0-0.yaml
+tags: [finops, opencost, litellm, guardrails, prometheus, grafana, airflow, chargeback, multi-model, cost]
+blueprint: finops-multimodel-ollama-1-0-0
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
   - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
   - {id: certm, label: "cert-manager",                    kind: namespace, name: cert-manager}
-  - {id: gpuop, label: "GPU Operator",                    kind: namespace, name: gpu-operator}
 # The custom chat UI the marketplace runs locally (replaces Open WebUI). Talks to the
 # LiteLLM gateway over a port-forward; env localhost:4000 is auto-remapped to the
 # random local port the marketplace assigns the forward.
@@ -30,9 +28,8 @@ localFrontend:
   env:
     LITELLM_BASE_URL: "http://localhost:4000"
     LITELLM_MASTER_KEY: "sk-guardrails-demo"
-    # Single model for the chat UI (keeps the demo simple; dashboards carry the
-    # multi-model story).
-    CHAT_MODEL: "qwen-0.5b"
+    # Single warm model for the chat UI (memory-constrained CPU box).
+    CHAT_MODEL: "qwen-2.5-0.5b"
   portForwards:
     - {name: litellm, service: litellm, local: 4000, remote: 4000}
 # In-cluster component UIs the marketplace can port-forward on demand (button enabled
@@ -45,7 +42,7 @@ componentUIs:
 # a temporary port-forward to the Airflow API server and runs each in order. This
 # pipeline only SETS UP + BACKFILLS history (both light) so the dashboards populate
 # instantly. generate_traffic is intentionally NOT here — it drives real inference
-# and is heavy; run it manually from the Airflow UI when you want live spend.
+# and is heavy on CPU; run it manually from the Airflow UI when you want live spend.
 # service/port/user/password default to the apache-airflow chart values.
 airflowPipeline:
   dags:
@@ -130,12 +127,11 @@ guide:
   - title: Create the AIWorkload (SUSE AI Factory UI)
     body: |
       In the SUSE AI Factory UI, go to **Blueprints → FinOps Multi-Model Gateway
-      (vLLM) → Create AIWorkload**, choose a target **namespace**, and deploy. Wait for
-      vLLM (it serves three Qwen models on GPU — Qwen2.5-0.5B/1.5B/3B-Instruct,
-      downloaded on first start; the default is one GPU per model), LiteLLM + its
-      Postgres, the two Presidio pods, the LiteLLM exporter, Prometheus, Grafana,
-      OpenCost, and Airflow to be Ready. This is a large workload — give it several
-      minutes. Enter the namespace you chose below.
+      (Ollama) → Create AIWorkload**, choose a target **namespace**, and deploy. Wait
+      for Ollama (it pulls three models on first start — qwen2.5:0.5b, qwen3.5:0.8b,
+      llama3.2:1b), LiteLLM + its Postgres, the two Presidio pods, the LiteLLM exporter,
+      Prometheus, Grafana, OpenCost, and Airflow to be Ready. This is a large workload —
+      give it several minutes. Enter the namespace you chose below.
     action: {type: namespace-input}
   - title: Set up teams, then simulate consumption (Airflow)
     body: |
@@ -149,8 +145,9 @@ guide:
 
       **Optional — live traffic (manual):** to add real, live token consumption, open
       the **Airflow UI** button (log in with **admin / admin**) and run
-      `generate_traffic`. It's kept out of the one-click pipeline. Raise
-      `TRAFFIC_REQUESTS` / `BACKFILL_DAYS` on the blueprint for more volume/history.
+      `generate_traffic`. It drives real inference and is heavier on CPU, so it's kept
+      out of the one-click pipeline. Raise `TRAFFIC_REQUESTS` / `BACKFILL_DAYS` on the
+      blueprint for more volume/history.
     action: {type: trigger-dags}
   - title: Explore the FinOps dashboards (Grafana)
     body: |
@@ -161,8 +158,7 @@ guide:
         and by team (from the LiteLLM exporter).
       - **Chargeback & budgets** — per-team budget utilization, tokens by model.
       - **Historical spend (backfilled)** — daily spend by team / model.
-      - **Infrastructure cost (OpenCost)** — cluster $/hr, projected monthly, CPU vs RAM
-        (GPU node cost is included in the cluster total — the dominant cost here).
+      - **Infrastructure cost (OpenCost)** — cluster $/hr, projected monthly, CPU vs RAM.
 
       For a detailed per-workload infra breakdown, open the **OpenCost UI** button.
   - title: Launch the chat UI

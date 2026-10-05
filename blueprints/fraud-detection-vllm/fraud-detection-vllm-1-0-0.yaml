@@ -114,7 +114,7 @@ spec:
         enabled: false
       # Custom Airflow image: built FROM the SUSE Application Collection apache-airflow
       # base (which ships without pip) with the DAG's Python libraries baked in. See the
-      # ollama variant / blueprints/fraud-detection-vllm/airflow-image/Dockerfile. This
+      # ollama variant / assets/fraud-detection-vllm/airflow-image/Dockerfile. This
       # replaces the too-slow-to-converge _PIP_ADDITIONAL_REQUIREMENTS approach.
       images:
         airflow:
@@ -130,7 +130,7 @@ spec:
           ref: main
           rev: HEAD
           depth: 1
-          subPath: blueprints/fraud-detection-vllm/dags
+          subPath: assets/fraud-detection-vllm/dags
           period: 30s
       env:
       - name: POSTGRES_URI

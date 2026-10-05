@@ -30,7 +30,7 @@ QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
 KB_COLLECTION = os.environ.get("KB_COLLECTION", "kb")
 
 # The knowledge base + example posts ship alongside the DAGs in this repo.
-# dags/ and include/ are siblings under blueprints/airflow-genai-rag/.
+# dags/ and include/ are siblings under assets/airflow-genai-rag/.
 INCLUDE_DIR = Path(__file__).resolve().parent.parent / "include"
 KB_DIR = INCLUDE_DIR / "knowledge_base"
 EXAMPLES_DIR = INCLUDE_DIR / "examples"

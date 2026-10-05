@@ -7,7 +7,7 @@ description: >-
   token needed. Demo only — not for clinical use.
 category: healthcare
 tags: [healthcare, xray, medgemma, ollama, biomedclip, qdrant, cpu, vision]
-blueprintFile: xray-copilot-ollama-1-0-0.yaml
+blueprint: xray-copilot-ollama-1-0-0
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
   - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}

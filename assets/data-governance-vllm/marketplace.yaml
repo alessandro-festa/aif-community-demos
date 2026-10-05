@@ -1,16 +1,16 @@
-id: data-governance-ollama
-displayName: Data Governance Copilot (Ollama, CPU)
+id: data-governance-vllm
+displayName: Data Governance Copilot (vLLM, GPU)
 description: >-
   Enterprise data governance on OpenMetadata (Apache-2.0) with a local LLM copilot.
   OpenMetadata provides the catalog, business glossary + reference/master data, lineage
   and impact analysis, data-quality test suites, roles/policies (access matrices),
   regulation classifications and alerting. Apache Airflow (stock AppCo image) seeds and
   drives OpenMetadata via REST and computes data quality over PostgreSQL sample data
-  (an enterprise DWH + a public-administration registry). A local UI copilot (Ollama)
+  (an enterprise DWH + a public-administration registry). A local UI copilot (vLLM, GPU)
   answers discovery questions, drafts glossary terms and explains lineage/impact and DQ.
 category: governance
-tags: [governance, data-catalog, openmetadata, glossary, lineage, data-quality, airflow, ollama, regtech]
-blueprintFile: data-governance-ollama-1-0-0.yaml
+tags: [governance, data-catalog, openmetadata, glossary, lineage, data-quality, airflow, vllm, gpu, regtech]
+blueprint: data-governance-vllm-1-0-0
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
   - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
@@ -23,8 +23,8 @@ clusterResources:
   - clusterrepos/openmetadata-clusterrepo.yaml
   - clusterrepos/bitnami-clusterrepo.yaml
 # The governance copilot UI the marketplace runs locally. Reads OpenMetadata's REST API
-# and talks to Ollama (OpenAI-compatible) — both over port-forwards; localhost ports are
-# auto-remapped to the random local ports the marketplace assigns.
+# and talks to the vLLM router (OpenAI-compatible) — both over port-forwards; localhost
+# ports are auto-remapped to the random local ports the marketplace assigns.
 localFrontend:
   dir: ui
   runtime: python
@@ -37,25 +37,17 @@ localFrontend:
     OM_BASE_URL: "http://localhost:8585"
     OM_USER: "admin@open-metadata.org"
     OM_PASSWORD: "admin"
-    OPENAI_BASE_URL: "http://localhost:11434/v1"
-    LLM_MODEL: "{{MODEL}}"
+    OPENAI_BASE_URL: "http://localhost:8000/v1"
+    LLM_MODEL: "Qwen/Qwen2.5-1.5B-Instruct"
     OPENAI_API_KEY: "EMPTY"
   portForwards:
     - {name: openmetadata, service: openmetadata, local: 8585, remote: 8585}
-    - {name: ollama, service: ollama, local: 11434, remote: 11434}
+    - {name: vllm, service: vllm-router-service, local: 8000, remote: 80}
 # In-cluster component UIs the marketplace can port-forward on demand (button enabled
 # once the service is Ready). OpenMetadata's own UI is the rich governance surface.
 componentUIs:
   - {name: openmetadata, label: "OpenMetadata UI", service: openmetadata, port: 8585, path: /}
   - {name: airflow,      label: "Airflow UI",      service: apache-airflow-api-server, port: 8080, path: /}
-# Pick the copilot LLM size at import + frontend start (CPU).
-modelSizes:
-  default: small
-  envKey: LLM_MODEL
-  replace: "{{MODEL}}"
-  options:
-    - {id: small, label: "0.5B — default, fastest (CPU)", model: "qwen2.5:0.5b"}
-    - {id: large, label: "0.8B — slightly slower, higher quality",  model: "qwen3.5:0.8b"}
 # The DAGs bpm triggers sequentially from the guide (trigger-dags action) — same order
 # as the manual steps below. Each waits for the previous to finish; they can still be run
 # manually in the Airflow UI. Defaults: apache-airflow-api-server:8080, admin/admin.
@@ -68,21 +60,21 @@ airflowPipeline:
 guide:
   - title: Import the blueprint
     body: |
-      Applies the Data Governance Copilot (Ollama) Blueprint CR to the selected cluster —
+      Applies the Data Governance Copilot (vLLM) Blueprint CR to the selected cluster —
       it adds it to the SUSE AI Factory catalog, it does not deploy anything yet.
 
       This blueprint uses two **upstream Apache-2.0** charts (OpenMetadata, and the Bitnami
       PostgreSQL chart — OpenMetadata needs pgcrypto, which the AppCo Postgres image lacks)
       that aren't in the Application Collection. Import **automatically registers their
       ClusterRepos first**
-      (`kubectl apply` of `clusterrepos/`), so no separate terminal is needed. Everything else (PostgreSQL, OpenSearch, Airflow, Ollama) is Application Collection.
+      (`kubectl apply` of `clusterrepos/`), so no separate terminal is needed. Everything else (PostgreSQL, OpenSearch, Airflow, vLLM) is Application Collection.
     action: {type: import}
   - title: Create the AIWorkload (SUSE AI Factory UI)
     body: |
-      In the SUSE AI Factory UI, go to **Blueprints → Data Governance Copilot (Ollama) →
+      In the SUSE AI Factory UI, go to **Blueprints → Data Governance Copilot (vLLM) →
       Create AIWorkload**, choose a target **namespace**, and deploy. This is a large
       workload — wait for PostgreSQL, **OpenSearch**, **OpenMetadata** (its migration job
-      then the server), Airflow and Ollama to be Ready (several minutes). Enter the
+      then the server), Airflow and vLLM (GPU) to be Ready (several minutes). Enter the
       namespace you chose below.
     action: {type: namespace-input}
   - title: Run the governance pipeline (Airflow)
@@ -117,7 +109,7 @@ guide:
       - **Settings → Roles & Policies / Teams** — the access matrices.
   - title: Launch the copilot
     body: |
-      Starts `kubectl port-forward` to OpenMetadata (8585) and Ollama (11434) and runs the
+      Starts `kubectl port-forward` to OpenMetadata (8585) and the vLLM router (8000) and runs the
       SUSE Data Governance Copilot UI locally.
     action: {type: start-frontend}
   - title: Ask the copilot

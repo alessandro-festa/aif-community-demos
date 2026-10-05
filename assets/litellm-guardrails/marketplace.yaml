@@ -7,7 +7,7 @@ description: >-
   in a pre-import wizard; they are injected into the LiteLLM config at import time.
 category: security
 tags: [litellm, guardrails, presidio, pii, ollama, open-webui, security]
-blueprintFile: litellm-guardrails-1-0-0.yaml
+blueprint: litellm-guardrails-1-0-0
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
   - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}

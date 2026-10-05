@@ -7,7 +7,7 @@ description: >-
   reason at a selectable sensitivity. Requires a real GPU node.
 category: safety
 tags: [visiongpt, vllm, qwen2.5-vl, vision, gpu]
-blueprintFile: visiongpt-vllm-1-0-0.yaml
+blueprint: visiongpt-vllm-1-0-0
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
   - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}

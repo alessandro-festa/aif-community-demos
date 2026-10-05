@@ -914,7 +914,7 @@ spec:
           ref: main
           rev: HEAD
           depth: 1
-          subPath: blueprints/finops-multimodel-ollama/dags
+          subPath: assets/finops-multimodel-ollama/dags
           period: 30s
       env:
       - name: LITELLM_BASE_URL

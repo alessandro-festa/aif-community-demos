@@ -8,7 +8,7 @@ description: >-
   real GPU node. With thanks to SantanderAI/gen-fraud-graph for the inspiration.
 category: anomaly-detection
 tags: [fraud, aml, airflow, xgboost, vllm, qdrant, anomaly, gpu]
-blueprintFile: fraud-detection-vllm-1-0-0.yaml
+blueprint: fraud-detection-vllm-1-0-0
 prerequisites:
   - {id: aif,   label: "SUSE AI Factory (Blueprint CRD)", kind: crd, name: blueprints.ai-factory.suse.com}
   - {id: sc,    label: "Default StorageClass",            kind: default-storageclass}
