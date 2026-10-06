@@ -10,8 +10,8 @@ metadata:
 # claims/tickets) into PostgreSQL and embeds the tickets into Qdrant; a local SUSE chat
 # UI lets a customer upload an accident photo, chat with a support-agent persona, open/
 # close tickets, and see SIMILAR past cases — redacted (PII removed) with Presidio.
-# Ollama serves qwen2.5:0.5b (chat + open/close-ticket tool-calling), qwen2.5vl:3b
-# (accident-photo vision), and nomic-embed-text (semantic index) — all <4B for CPU.
+# Ollama serves granite4:350m-h (chat + open/close-ticket tool-calling), minicpm-v4.6:1b
+# (accident-photo vision), and nomic-embed-text (semantic index) — all <2B for CPU.
 # All components from the SUSE Application Collection. DEMO ONLY — synthetic data.
 spec:
   source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
@@ -28,15 +28,15 @@ spec:
     cases — every retrieved case is REDACTED with Presidio before display so one
     customer never sees another's personal data.
 
-    Ollama serves qwen2.5:0.5b (chat + tool-calling for open/close ticket), qwen2.5vl:3b
+    Ollama serves granite4:350m-h (chat + tool-calling for open/close ticket), minicpm-v4.6:1b
     (accident-photo captioning), and nomic-embed-text (semantic index); CLIP image
     similarity runs on CPU in the local UI. The Airflow `customize_model` DAG creates a
-    `support-agent` persona model from the tool-capable qwen2.5:0.5b.
+    `support-agent` persona model from the tool-capable granite4:350m-h.
 
     Prerequisites: the SUSE AI Factory operator, the application-collection ClusterRepo
-    (+ credentials secret), a default StorageClass, and cert-manager. After importing,
-    create an AIWorkload, run the DAGs (generate_dataset → index_cases → customize_model),
-    then launch the local UI from the guide. Dataset size is controlled by N_TICKETS.
+    (+ credentials secret), a default StorageClass, and cert-manager. After kubectl
+    apply, create an AIWorkload, run the DAGs (generate_dataset → index_cases → customize_model),
+    then run the local UI from ui/ (see README). Dataset size is controlled by N_TICKETS.
     DEMO ONLY — synthetic data; Presidio redaction is best-effort, not a guarantee.
   components:
   # ----------------------------------------------------------------------- #
@@ -44,7 +44,7 @@ spec:
   # ----------------------------------------------------------------------- #
   - chartName: postgresql
     chartRepo: application-collection
-    chartVersion: 0.6.0
+    chartVersion: 0.7.0
     values:
       fullnameOverride: support-db
       image:
@@ -64,7 +64,7 @@ spec:
   # ----------------------------------------------------------------------- #
   - chartName: qdrant
     chartRepo: suse-ai-registry
-    chartVersion: 1.17.0
+    chartVersion: 1.19.0
     values:
       fullnameOverride: qdrant
       persistence:
@@ -73,30 +73,30 @@ spec:
       service:
         type: ClusterIP
   # ----------------------------------------------------------------------- #
-  # Ollama — chat+tools (qwen2.5:0.5b), photo vision (qwen2.5vl:3b), embeddings
+  # Ollama — chat+tools (granite4:350m-h), photo vision (minicpm-v4.6:1b), embeddings
   # (nomic-embed-text), CPU.
   # ----------------------------------------------------------------------- #
   - chartName: ollama
     chartRepo: application-collection
-    chartVersion: 1.55.0
+    chartVersion: 1.76.0
     values:
       fullnameOverride: ollama
       image:
         pullPolicy: IfNotPresent
         registry: dp.apps.rancher.io
         repository: containers/ollama
-        tag: 0.21.2-11.48
+        tag: 0.32.14-11.95
       ollama:
         gpu:
           enabled: false
           draEnabled: false
         models:
           pull:
-          - "{{MODEL}}"       # chat + tool-calling (open/close ticket) — user-selectable size
-          - qwen2.5vl:3b      # accident-photo vision (captioning)
+          - "granite4:350m-h"       # chat + tool-calling (open/close ticket) — user-selectable size
+          - minicpm-v4.6:1b    # accident-photo vision (captioning), shared with VisionGPT / VSS
           - nomic-embed-text  # semantic embeddings
           run:
-          - "{{MODEL}}"
+          - "granite4:350m-h"
         port: 11434
       persistentVolume:
         enabled: true
@@ -107,11 +107,11 @@ spec:
         port: 11434
         type: ClusterIP
   # ----------------------------------------------------------------------- #
-  # Apache Airflow — generate_dataset → index_cases → customize_model. DAGs via git-sync.
+  # Apache Airflow — generate_dataset → index_cases → customize_model. DAGs embedded in this CR.
   # ----------------------------------------------------------------------- #
   - chartName: apache-airflow
     chartRepo: application-collection
-    chartVersion: 1.22.0
+    chartVersion: 1.22.2
     values:
       executor: LocalExecutor
       # Pin Airflow's generated secret keys so the pod template is STABLE across Fleet
@@ -130,19 +130,702 @@ spec:
       images:
         airflow:
           repository: containers/apache-airflow
-          tag: 3.2.2-8.14
+          tag: 3.3.2-13.2
           registry: dp.apps.rancher.io
           pullPolicy: IfNotPresent
+      # --- BEGIN embedded DAGs (tools/embed-dags.py, source: ./dags; do not edit here) ---
       dags:
         gitSync:
-          enabled: true
-          repo: https://github.com/alessandro-festa/aif-community-demos.git
-          branch: main
-          ref: main
-          rev: HEAD
-          depth: 1
-          subPath: assets/insurance-support-ollama/dags
-          period: 30s
+          enabled: false
+      extraConfigMaps:
+        airflow-dags:
+          useHelmHooks: false
+          data: |
+            common.py: |2
+              """
+              Shared helpers for the Insurance Support Copilot DAGs.
+
+              The DAGs generate a synthetic insurance support dataset into PostgreSQL, embed the
+              ticket text into Qdrant (semantic "similar case" index), and (Ollama variant) create
+              a customized support-agent persona model. Everything talks to Postgres via psycopg2
+              and to the embedding endpoint + Qdrant over plain HTTP (`requests`) — all present in
+              the STOCK AppCo Airflow image (psycopg2 ships for Airflow's own Postgres metadata),
+              so no custom image is needed. Synthetic data is generated with the stdlib only.
+
+              Config (env, injected by the apache-airflow component):
+                POSTGRES_URI     postgresql://insurance:insurance@support-db:5432/insurance
+                QDRANT_URL       http://qdrant:6333                  Qdrant REST API
+                EMBED_BASE_URL   http://ollama:11434/v1              OpenAI-compatible /embeddings
+                EMBED_MODEL      nomic-embed-text
+                CHAT_BASE_URL    http://ollama:11434/v1              OpenAI-compatible chat (persona base)
+                BASE_MODEL       granite4:350m-h                        base model to customize from (Ollama)
+                CUSTOM_MODEL     support-agent                       created persona model tag
+                N_TICKETS        400                                 synthetic support tickets to generate
+                CASES_COLLECTION support_cases
+              """
+              from __future__ import annotations
+
+              import os
+
+              import psycopg2
+              import psycopg2.extras
+              import requests
+
+              POSTGRES_URI = os.environ.get("POSTGRES_URI", "postgresql://insurance:insurance@support-db:5432/insurance")
+              QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333").rstrip("/")
+              QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
+              EMBED_BASE_URL = os.environ.get("EMBED_BASE_URL", "http://ollama:11434/v1").rstrip("/")
+              EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
+              CHAT_BASE_URL = os.environ.get("CHAT_BASE_URL", "http://ollama:11434/v1").rstrip("/")
+              BASE_MODEL = os.environ.get("BASE_MODEL", "granite4:350m-h")
+              CUSTOM_MODEL = os.environ.get("CUSTOM_MODEL", "support-agent")
+              def _int_env(name: str, default: int) -> int:
+                  """Parse an int env var, tolerating a non-numeric value."""
+                  try:
+                      return int(os.environ.get(name, str(default)))
+                  except (TypeError, ValueError):
+                      return default
+
+
+              N_TICKETS = _int_env("N_TICKETS", 400)
+              CASES_COLLECTION = os.environ.get("CASES_COLLECTION", "support_cases")
+              HTTP_TIMEOUT = 120
+
+
+              # --------------------------------------------------------------------------- #
+              # PostgreSQL (raw psycopg2 — same pattern as the fraud blueprint)
+              # --------------------------------------------------------------------------- #
+              def pg_conn():
+                  return psycopg2.connect(POSTGRES_URI)
+
+
+              def pg_exec(sql: str, params=None):
+                  with pg_conn() as conn, conn.cursor() as cur:
+                      cur.execute(sql, params or ())
+
+
+              def pg_insert_rows(table: str, columns: list[str], rows: list[tuple]):
+                  if not rows:
+                      return
+                  cols = ", ".join(columns)
+                  with pg_conn() as conn, conn.cursor() as cur:
+                      psycopg2.extras.execute_values(
+                          cur, f"INSERT INTO {table} ({cols}) VALUES %s", rows, page_size=1000
+                      )
+
+
+              def pg_query(sql: str, params=None) -> list[tuple]:
+                  with pg_conn() as conn, conn.cursor() as cur:
+                      cur.execute(sql, params or ())
+                      return cur.fetchall()
+
+
+              # --------------------------------------------------------------------------- #
+              # Embeddings (OpenAI-compatible /v1/embeddings — Ollama and vLLM both expose it)
+              # --------------------------------------------------------------------------- #
+              def embed(text: str, model: str = EMBED_MODEL) -> list[float]:
+                  r = requests.post(
+                      f"{EMBED_BASE_URL}/embeddings",
+                      json={"model": model, "input": text},
+                      timeout=HTTP_TIMEOUT,
+                  )
+                  r.raise_for_status()
+                  data = r.json().get("data") or []
+                  if not data or "embedding" not in data[0]:
+                      raise RuntimeError(f"embeddings endpoint returned no vector for {model!r}: {r.text[:200]}")
+                  return data[0]["embedding"]
+
+
+              # --------------------------------------------------------------------------- #
+              # Ollama model customization (persona) — Ollama variant only
+              # --------------------------------------------------------------------------- #
+              def _ollama_root() -> str:
+                  return CHAT_BASE_URL[:-3].rstrip("/") if CHAT_BASE_URL.endswith("/v1") else CHAT_BASE_URL
+
+
+              def ollama_create_model(name: str, from_model: str, system: str, messages: list[dict]) -> None:
+                  payload = {"model": name, "from": from_model, "system": system, "stream": False}
+                  if messages:
+                      payload["messages"] = messages
+                  r = requests.post(f"{_ollama_root()}/api/create", json=payload, timeout=HTTP_TIMEOUT)
+                  r.raise_for_status()
+
+
+              def ollama_tags() -> list[str]:
+                  """List model tags on the Ollama server (also used as a readiness probe)."""
+                  r = requests.get(f"{_ollama_root()}/api/tags", timeout=HTTP_TIMEOUT)
+                  r.raise_for_status()
+                  return [m["name"] for m in r.json().get("models", [])]
+
+
+              # --------------------------------------------------------------------------- #
+              # Qdrant (plain REST API — requests only)
+              # --------------------------------------------------------------------------- #
+              def _qdrant_headers() -> dict:
+                  h = {"Content-Type": "application/json"}
+                  if QDRANT_API_KEY:
+                      h["api-key"] = QDRANT_API_KEY
+                  return h
+
+
+              def qdrant_has_collection(name: str = CASES_COLLECTION) -> bool:
+                  r = requests.get(f"{QDRANT_URL}/collections/{name}", headers=_qdrant_headers(), timeout=HTTP_TIMEOUT)
+                  return r.status_code == 200
+
+
+              def qdrant_drop_collection(name: str = CASES_COLLECTION) -> None:
+                  if qdrant_has_collection(name):
+                      r = requests.delete(f"{QDRANT_URL}/collections/{name}", headers=_qdrant_headers(), timeout=HTTP_TIMEOUT)
+                      r.raise_for_status()
+
+
+              def qdrant_create_collection(dim: int, name: str = CASES_COLLECTION) -> None:
+                  """Create the support-cases collection: a COSINE vector. Qdrant collections are
+                  schemaless for payload data, so the filterable metadata (ticket_id, subject, body,
+                  accident_type, product_type, status, was_paid, within_policy, resolution) simply
+                  rides along in each point's payload — no field/type declarations needed."""
+                  r = requests.put(
+                      f"{QDRANT_URL}/collections/{name}",
+                      json={"vectors": {"size": dim, "distance": "Cosine"}},
+                      headers=_qdrant_headers(), timeout=HTTP_TIMEOUT,
+                  )
+                  r.raise_for_status()
+
+
+              def qdrant_insert(rows: list[dict], name: str = CASES_COLLECTION) -> None:
+                  batch = 100
+                  for i in range(0, len(rows), batch):
+                      points = [
+                          {"id": row["id"], "vector": row["vector"],
+                           "payload": {k: v for k, v in row.items() if k not in ("id", "vector")}}
+                          for row in rows[i:i + batch]
+                      ]
+                      r = requests.put(
+                          f"{QDRANT_URL}/collections/{name}/points",
+                          json={"points": points}, headers=_qdrant_headers(), timeout=HTTP_TIMEOUT,
+                      )
+                      r.raise_for_status()
+            customize_model.py: |2
+              """
+              DAG: customize_model  (Ollama variant only)
+
+              Teach the base model a support-agent *persona* via an Ollama Modelfile — the
+              CPU-friendly, no-GPU analogue of fine-tuning (same approach as airflow-genai-rag's
+              astra-custom). Builds a system persona + a few real few-shot examples drawn from
+              resolved tickets in Postgres, then POSTs /api/create to Ollama, tagging the model
+              `support-agent`. The chat UI selects this model when present.
+
+              The vLLM variant does not run this DAG; it applies the same persona as a system
+              prompt in the app instead.
+              """
+              from __future__ import annotations
+
+              import time
+              from datetime import timedelta
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import BASE_MODEL, CUSTOM_MODEL, ollama_create_model, ollama_tags, pg_query
+
+
+              def _wait_for_ollama(timeout_s: int = 1800, interval_s: int = 15):
+                  """Block until Ollama answers (it can take a while to pull models on first start)."""
+                  deadline = time.monotonic() + timeout_s
+                  last = None
+                  while time.monotonic() < deadline:
+                      try:
+                          ollama_tags()
+                          return
+                      except Exception as e:  # noqa: BLE001
+                          last = e
+                      print("[customize_model] waiting for Ollama…", flush=True)
+                      time.sleep(interval_s)
+                  raise RuntimeError(f"Ollama not ready after {timeout_s}s: {last}")
+
+              SYSTEM_PERSONA = (
+                  "You are Ava, a calm, empathetic insurance customer-support agent. Help the "
+                  "customer understand their policy, open or close support tickets, and explain "
+                  "claim decisions in plain language. Be concise and factual, ground every answer "
+                  "in the customer's policy and ticket data provided to you, and never invent "
+                  "coverage. When you reference a similar past case, only use the redacted summary "
+                  "you are given — never reveal another customer's personal details. If a request "
+                  "is outside policy or needs a human, say so and offer to escalate."
+              )
+
+
+              @dag(
+                  dag_id="customize_model",
+                  schedule=None,
+                  start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                  catchup=False,
+                  tags=["insurance-support", "customize"],
+              )
+              def customize_model():
+                  @task
+                  def build_messages() -> list[dict]:
+                      """A handful of resolved tickets become user/assistant few-shot pairs."""
+                      rows = pg_query("""
+                          SELECT t.subject, t.body, t.resolution_notes
+                          FROM support_tickets t
+                          WHERE t.status IN ('resolved', 'closed')
+                            AND t.resolution_notes IS NOT NULL AND t.resolution_notes <> ''
+                          ORDER BY t.ticket_id LIMIT 6
+                      """)
+                      messages: list[dict] = []
+                      for subject, body, resolution in rows:
+                          messages.append({"role": "user", "content": f"{subject}\n\n{body}"})
+                          messages.append({"role": "assistant", "content": resolution})
+                      return messages
+
+                  @task(retries=3, retry_delay=timedelta(minutes=3))
+                  def create(messages: list[dict]) -> dict:
+                      _wait_for_ollama()  # tolerate a slow first-start model pull
+                      ollama_create_model(CUSTOM_MODEL, BASE_MODEL, SYSTEM_PERSONA, messages)
+                      return {"model": CUSTOM_MODEL, "from": BASE_MODEL, "examples": len(messages) // 2}
+
+                  create(build_messages())
+
+
+              customize_model()
+            generate_dataset.py: |2
+              """
+              DAG: generate_dataset
+
+              Generate a SYNTHETIC insurance customer-support dataset (stdlib only — no Faker) and
+              load it into Postgres: customers + households/family links, policies, accident types,
+              claims (with derived pay/within-policy decisions), and support tickets (with a
+              realistic status lifecycle). Ticket bodies are templated-then-varied per accident type
+              so the Qdrant "similar case" search returns genuinely related precedents.
+
+              Uses only Python stdlib + psycopg2 (psycopg2 ships in the AppCo Airflow image, which
+              already uses Postgres for its own metadata) — so it runs on the STOCK apache-airflow
+              image, no custom image needed.
+
+              Volume is controlled by the N_TICKETS env (default 400). Re-runnable: drops + recreates
+              the tables each run. Trigger from the Airflow UI (or schedule).
+              """
+              from __future__ import annotations
+
+              import random
+              from datetime import date, datetime, timedelta
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import N_TICKETS, pg_exec, pg_insert_rows
+
+              SEED = 42
+              BASE = date(2026, 7, 1)  # fixed reference so runs are reproducible with SEED
+
+              PRODUCTS = ["auto", "home", "health", "travel"]
+
+              FIRST_NAMES = ["Marco", "Giulia", "Luca", "Sofia", "Andrea", "Elena", "Matteo", "Chiara",
+                             "Francesco", "Anna", "Davide", "Sara", "Alessandro", "Martina", "Paolo",
+                             "Valentina", "Simone", "Federica", "Giorgio", "Laura"]
+              LAST_NAMES = ["Rossi", "Bianchi", "Ferrari", "Russo", "Romano", "Gallo", "Costa", "Fontana",
+                            "Conti", "Esposito", "Ricci", "Bruno", "Greco", "Marino", "Rizzo", "Moretti"]
+              CITIES = ["Turin", "Milan", "Rome", "Naples", "Bologna", "Florence", "Genoa", "Verona",
+                        "Venice", "Palermo", "Bari", "Padua"]
+              STREETS = ["Via Roma", "Via Garibaldi", "Corso Italia", "Via Dante", "Viale Europa",
+                         "Via Marconi", "Piazza Duomo", "Via Verdi", "Corso Vittorio", "Via Milano"]
+
+              # accident_type -> (product, base_severity 1-5, covered_by_default)
+              ACCIDENT_TYPES = {
+                  "collision": ("auto", 4, True),
+                  "windshield": ("auto", 2, True),
+                  "theft": ("auto", 4, True),
+                  "vandalism": ("auto", 2, True),
+                  "water_damage": ("home", 4, True),
+                  "fire": ("home", 5, True),
+                  "burglary": ("home", 3, True),
+                  "storm_damage": ("home", 3, True),
+                  "hospitalization": ("health", 5, True),
+                  "outpatient": ("health", 2, True),
+                  "dental": ("health", 1, False),      # often excluded -> interesting denials
+                  "trip_cancellation": ("travel", 2, True),
+                  "lost_luggage": ("travel", 1, True),
+                  "medical_abroad": ("travel", 4, True),
+              }
+
+              BODY_TEMPLATES = {
+                  "collision": [
+                      "I was involved in a car accident at {place}. The front of my vehicle is damaged and I need to file a claim.",
+                      "Another driver hit my car at {place}. There is significant damage to the bumper and headlights.",
+                  ],
+                  "windshield": [
+                      "A stone cracked my windshield on the motorway near {place}. Can this be repaired under my policy?",
+                      "My windscreen chipped and the crack is spreading. I'd like to arrange a repair.",
+                  ],
+                  "theft": [
+                      "My car was stolen from {place} last night. I have already reported it to the police.",
+                      "Someone broke into my vehicle at {place} and stole belongings. What does my policy cover?",
+                  ],
+                  "vandalism": [
+                      "My car was keyed and a mirror broken while parked at {place}.",
+                      "Someone vandalised my vehicle overnight near {place}; the paintwork is scratched.",
+                  ],
+                  "water_damage": [
+                      "A burst pipe flooded my kitchen at {place}. Floor and cabinets are damaged.",
+                      "Heavy rain caused water to leak through the roof and damage the ceiling.",
+                  ],
+                  "fire": [
+                      "There was a small kitchen fire at my home in {place}; smoke damaged the walls.",
+                      "An electrical fault started a fire in the garage. I need to claim for the damage.",
+                  ],
+                  "burglary": [
+                      "My home in {place} was burgled and electronics were taken.",
+                      "Someone broke in through a window and stole jewellery and a laptop.",
+                  ],
+                  "storm_damage": [
+                      "A storm blew tiles off my roof in {place} and water is getting in.",
+                      "High winds knocked a tree onto my fence and shed.",
+                  ],
+                  "hospitalization": [
+                      "I was hospitalised for three days and want to claim the treatment costs.",
+                      "My spouse was admitted to hospital after an emergency; how do I file a claim?",
+                  ],
+                  "outpatient": [
+                      "I had an outpatient procedure and would like to be reimbursed.",
+                      "I visited a specialist and paid out of pocket; can I claim this back?",
+                  ],
+                  "dental": [
+                      "I had a dental treatment and would like to know if it is covered.",
+                      "My dentist bill was expensive; is dental included in my health policy?",
+                  ],
+                  "trip_cancellation": [
+                      "I had to cancel my trip to {place} due to illness and lost the flight cost.",
+                      "My holiday was cancelled and I want to claim the non-refundable bookings.",
+                  ],
+                  "lost_luggage": [
+                      "The airline lost my luggage on the way to {place}. How do I claim?",
+                      "My suitcase never arrived; I need to claim for the lost contents.",
+                  ],
+                  "medical_abroad": [
+                      "I fell ill while travelling in {place} and needed medical treatment abroad.",
+                      "I had an accident on holiday in {place} and paid for a hospital visit.",
+                  ],
+              }
+
+              TICKET_STATUSES = ["open", "in_progress", "pending", "resolved", "closed"]
+              PRIORITIES = ["low", "medium", "high", "urgent"]
+              RELATIONSHIPS = ["spouse", "child", "parent", "sibling"]
+
+
+              def _rand_date(start: date, end: date) -> date:
+                  span = max(0, (end - start).days)
+                  return start + timedelta(days=random.randint(0, span))
+
+
+              def _rand_dt(start: date, end: date) -> datetime:
+                  d = _rand_date(start, end)
+                  return datetime(d.year, d.month, d.day, random.randint(0, 23), random.randint(0, 59))
+
+
+              @dag(
+                  dag_id="generate_dataset",
+                  schedule=None,
+                  start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                  catchup=False,
+                  tags=["insurance-support", "synthetic-data"],
+              )
+              def generate_dataset():
+                  @task
+                  def create_schema():
+                      pg_exec("""
+                      DROP TABLE IF EXISTS support_tickets, claims, policies,
+                          family_relationships, customers, households, accident_types CASCADE;
+
+                      CREATE TABLE households (
+                          household_id  INT PRIMARY KEY,
+                          address       TEXT, city TEXT, postal_code TEXT
+                      );
+                      CREATE TABLE customers (
+                          customer_id   INT PRIMARY KEY,
+                          household_id  INT REFERENCES households(household_id),
+                          first_name    TEXT, last_name TEXT, dob DATE,
+                          email         TEXT, phone TEXT
+                      );
+                      CREATE TABLE family_relationships (
+                          customer_id         INT REFERENCES customers(customer_id),
+                          related_customer_id INT REFERENCES customers(customer_id),
+                          relationship_type   TEXT
+                      );
+                      CREATE TABLE accident_types (
+                          accident_type_id SERIAL PRIMARY KEY,
+                          name             TEXT UNIQUE, product_type TEXT,
+                          base_severity    INT, covered BOOLEAN
+                      );
+                      CREATE TABLE policies (
+                          policy_id      INT PRIMARY KEY,
+                          policy_number  TEXT UNIQUE,
+                          customer_id    INT REFERENCES customers(customer_id),
+                          product_type   TEXT, coverage_limit NUMERIC, deductible NUMERIC,
+                          premium        NUMERIC, start_date DATE, end_date DATE, status TEXT
+                      );
+                      CREATE TABLE claims (
+                          claim_id        INT PRIMARY KEY,
+                          policy_id       INT REFERENCES policies(policy_id),
+                          customer_id     INT REFERENCES customers(customer_id),
+                          accident_type   TEXT, incident_date DATE, filed_date DATE,
+                          description     TEXT, estimated_amount NUMERIC, paid_amount NUMERIC,
+                          was_paid        BOOLEAN, within_policy BOOLEAN, decision_reason TEXT
+                      );
+                      CREATE TABLE support_tickets (
+                          ticket_id       INT PRIMARY KEY,
+                          claim_id        INT REFERENCES claims(claim_id),
+                          customer_id     INT REFERENCES customers(customer_id),
+                          policy_id       INT REFERENCES policies(policy_id),
+                          subject         TEXT, body TEXT, channel TEXT, priority TEXT, status TEXT,
+                          assigned_agent  TEXT, created_at TIMESTAMP, updated_at TIMESTAMP,
+                          resolved_at     TIMESTAMP, closed_at TIMESTAMP, resolution_notes TEXT
+                      );
+                      """)
+                      pg_insert_rows("accident_types", ["name", "product_type", "base_severity", "covered"],
+                                     [(n, p, s, c) for n, (p, s, c) in ACCIDENT_TYPES.items()])
+                      return "schema ready"
+
+                  @task
+                  def generate(_prev: str):
+                      random.seed(SEED)
+                      n_tickets = max(20, N_TICKETS)
+                      n_households = max(5, n_tickets // 4)
+
+                      households, customers, rels = [], [], []
+                      cust_id = 0
+                      for hh in range(1, n_households + 1):
+                          households.append((hh, f"{random.randint(1, 200)} {random.choice(STREETS)}",
+                                             random.choice(CITIES), f"{random.randint(10000, 99999)}"))
+                          last = random.choice(LAST_NAMES)
+                          ids = []
+                          for _ in range(random.randint(1, 4)):
+                              cust_id += 1
+                              first = random.choice(FIRST_NAMES)
+                              dob = _rand_date(date(1945, 1, 1), date(2006, 1, 1))
+                              email = f"{first}.{last}{cust_id}@example.com".lower()
+                              phone = f"+39 0{random.randint(10, 99)} {random.randint(100, 999)} {random.randint(1000, 9999)}"
+                              customers.append((cust_id, hh, first, last, dob, email, phone))
+                              ids.append(cust_id)
+                          for i in range(len(ids)):
+                              for j in range(i + 1, len(ids)):
+                                  rels.append((ids[i], ids[j], random.choice(RELATIONSHIPS)))
+
+                      pg_insert_rows("households", ["household_id", "address", "city", "postal_code"], households)
+                      pg_insert_rows("customers",
+                                     ["customer_id", "household_id", "first_name", "last_name", "dob", "email", "phone"],
+                                     customers)
+                      pg_insert_rows("family_relationships",
+                                     ["customer_id", "related_customer_id", "relationship_type"], rels)
+
+                      policies = []
+                      pol_id = 0
+                      pol_by_customer: dict[int, list[tuple]] = {}
+                      for c in customers:
+                          cid = c[0]
+                          for _ in range(random.randint(1, 2)):
+                              pol_id += 1
+                              product = random.choice(PRODUCTS)
+                              start = _rand_date(BASE - timedelta(days=3 * 365), BASE - timedelta(days=365))
+                              end = _rand_date(BASE, BASE + timedelta(days=365))
+                              pol = (pol_id, f"POL-{pol_id:06d}", cid, product,
+                                     random.choice([5000, 10000, 25000, 50000, 100000]),
+                                     random.choice([0, 100, 250, 500, 1000]),
+                                     round(random.uniform(200, 2000), 2), start, end,
+                                     random.choices(["active", "lapsed"], weights=[85, 15])[0])
+                              policies.append(pol)
+                              pol_by_customer.setdefault(cid, []).append(pol)
+                      pg_insert_rows("policies",
+                                     ["policy_id", "policy_number", "customer_id", "product_type",
+                                      "coverage_limit", "deductible", "premium", "start_date", "end_date", "status"],
+                                     policies)
+
+                      claims, tickets = [], []
+                      claim_id = 0
+                      acc_names = list(ACCIDENT_TYPES.keys())
+                      for tid in range(1, n_tickets + 1):
+                          cust = random.choice(customers)
+                          cid = cust[0]
+                          cust_pols = pol_by_customer.get(cid, [])
+                          if not cust_pols:
+                              continue
+                          pol = random.choice(cust_pols)
+                          product = pol[3]
+                          candidates = [a for a in acc_names if ACCIDENT_TYPES[a][0] == product] or acc_names
+                          acc = random.choice(candidates)
+                          _, _severity, covered = ACCIDENT_TYPES[acc]
+                          place = random.choice(CITIES)
+
+                          incident = _rand_date(BASE - timedelta(days=365), BASE)
+                          estimated = round(random.uniform(200, float(pol[4]) * 1.2), 2)
+                          deductible = float(pol[5])
+                          limit = float(pol[4])
+                          in_dates = pol[7] <= incident <= pol[8]  # pol[7]=start_date, pol[8]=end_date
+                          within_policy = bool(covered and in_dates and estimated <= limit)
+                          was_paid = bool(within_policy and estimated > deductible and random.random() > 0.08)
+                          paid = round(min(estimated, limit) - deductible, 2) if was_paid else 0.0
+                          if within_policy and not was_paid:
+                              reason = "within policy but denied (documentation pending / fraud review)"
+                          elif not covered:
+                              reason = f"{acc} not covered by {product} policy"
+                          elif not in_dates:
+                              reason = "incident outside policy validity dates"
+                          elif estimated > limit:
+                              reason = "estimated amount exceeds coverage limit"
+                          else:
+                              reason = "approved and paid within coverage"
+
+                          body = random.choice(BODY_TEMPLATES[acc]).format(place=place)
+                          claim_id += 1
+                          claims.append((claim_id, pol[0], cid, acc, incident, incident, body,
+                                         estimated, paid, was_paid, within_policy, reason))
+
+                          status = random.choices(TICKET_STATUSES, weights=[20, 20, 10, 20, 30])[0]
+                          created = _rand_dt(BASE - timedelta(days=365), BASE)
+                          resolved = created if status in ("resolved", "closed") else None
+                          closed = created if status == "closed" else None
+                          res_notes = None
+                          if status in ("resolved", "closed"):
+                              res_notes = (f"Claim {'approved' if was_paid else 'denied'}: {reason}."
+                                           + (f" Paid {paid:.2f}." if was_paid else ""))
+                          subject = f"{acc.replace('_', ' ').title()} - {product} claim"
+                          agent = f"{random.choice(FIRST_NAMES)} {random.choice(LAST_NAMES)}"
+                          tickets.append((tid, claim_id, cid, pol[0], subject, body,
+                                          random.choice(["email", "phone", "web", "chat"]),
+                                          random.choices(PRIORITIES, weights=[30, 40, 20, 10])[0],
+                                          status, agent, created, created, resolved, closed, res_notes))
+
+                      pg_insert_rows("claims",
+                                     ["claim_id", "policy_id", "customer_id", "accident_type", "incident_date",
+                                      "filed_date", "description", "estimated_amount", "paid_amount",
+                                      "was_paid", "within_policy", "decision_reason"], claims)
+                      pg_insert_rows("support_tickets",
+                                     ["ticket_id", "claim_id", "customer_id", "policy_id", "subject", "body",
+                                      "channel", "priority", "status", "assigned_agent", "created_at",
+                                      "updated_at", "resolved_at", "closed_at", "resolution_notes"], tickets)
+                      return {"households": len(households), "customers": len(customers),
+                              "policies": len(policies), "claims": len(claims), "tickets": len(tickets)}
+
+                  generate(create_schema())
+
+
+              generate_dataset()
+            index_cases.py: |2
+              """
+              DAG: index_cases
+
+              Build the "similar case" semantic index. Reads resolved/closed support tickets from
+              Postgres, embeds each (subject + body) via the OpenAI-compatible /v1/embeddings
+              endpoint, and upserts them into the Qdrant `support_cases` collection with filterable
+              metadata. The chat UI queries this index and REDACTS each hit (Presidio) before
+              showing it. Re-runnable: drops and recreates the collection.
+
+              Only resolved/closed tickets are indexed — those are the useful precedents (they
+              carry a decision + resolution). Trigger after generate_dataset.
+              """
+              from __future__ import annotations
+
+              import time
+              from datetime import timedelta
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import (
+                  CASES_COLLECTION,
+                  embed,
+                  pg_query,
+                  qdrant_create_collection,
+                  qdrant_drop_collection,
+                  qdrant_insert,
+              )
+
+
+              def _wait_for_embeddings(timeout_s: int = 1800, interval_s: int = 15):
+                  """Block until the embedding endpoint answers (Ollama/vLLM can take a while to
+                  pull the model on first start). Raises if still unreachable after timeout."""
+                  deadline = time.monotonic() + timeout_s
+                  last = None
+                  while time.monotonic() < deadline:
+                      try:
+                          if embed("readiness probe"):
+                              return
+                      except Exception as e:  # noqa: BLE001 — endpoint not up / model not pulled yet
+                          last = e
+                      print("[index_cases] waiting for the embedding endpoint…", flush=True)
+                      time.sleep(interval_s)
+                  raise RuntimeError(f"embedding endpoint not ready after {timeout_s}s: {last}")
+
+
+              @dag(
+                  dag_id="index_cases",
+                  schedule=None,
+                  start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                  catchup=False,
+                  tags=["insurance-support", "rag", "index"],
+              )
+              def index_cases():
+                  @task(retries=3, retry_delay=timedelta(minutes=3))
+                  def build_index() -> dict:
+                      _wait_for_embeddings()  # tolerate a slow first-start model pull
+                      rows = pg_query("""
+                          SELECT t.ticket_id, t.subject, t.body, t.status,
+                                 COALESCE(c.accident_type, ''), COALESCE(p.product_type, ''),
+                                 COALESCE(c.was_paid, false), COALESCE(c.within_policy, false),
+                                 COALESCE(t.resolution_notes, '')
+                          FROM support_tickets t
+                          LEFT JOIN claims c   ON c.claim_id  = t.claim_id
+                          LEFT JOIN policies p ON p.policy_id = t.policy_id
+                          WHERE t.status IN ('resolved', 'closed')
+                      """)
+                      if not rows:
+                          raise RuntimeError("no resolved/closed tickets found — run generate_dataset first")
+
+                      # Determine embedding dimension from the first row, then (re)create the collection.
+                      first_vec = embed(f"{rows[0][1]}\n{rows[0][2]}")
+                      qdrant_drop_collection(CASES_COLLECTION)
+                      qdrant_create_collection(len(first_vec), CASES_COLLECTION)
+
+                      out = []
+                      for i, (tid, subject, body, status, acc, product, paid, within, res) in enumerate(rows):
+                          vec = first_vec if i == 0 else embed(f"{subject}\n{body}")
+                          out.append({
+                              "id": int(tid),
+                              "vector": vec,
+                              "ticket_id": int(tid),
+                              "subject": (subject or "")[:512],
+                              "body": (body or "")[:8192],
+                              "accident_type": (acc or "")[:64],
+                              "product_type": (product or "")[:32],
+                              "status": (status or "")[:32],
+                              "was_paid": 1 if paid else 0,
+                              "within_policy": 1 if within else 0,
+                              "resolution": (res or "")[:4096],
+                          })
+                      qdrant_insert(out, CASES_COLLECTION)
+                      return {"indexed": len(out), "dim": len(first_vec), "collection": CASES_COLLECTION}
+
+                  build_index()
+
+
+              index_cases()
+      volumes:
+      - name: dags
+        configMap:
+          name: airflow-dags
+          items:
+          - key: common.py
+            path: common.py
+          - key: customize_model.py
+            path: customize_model.py
+          - key: generate_dataset.py
+            path: generate_dataset.py
+          - key: index_cases.py
+            path: index_cases.py
+      volumeMounts:
+      - name: dags
+        mountPath: /opt/airflow/dags
+        readOnly: true
+      # --- END embedded DAGs ---
       env:
       - name: POSTGRES_URI
         value: postgresql://insurance:insurance@support-db:5432/insurance
@@ -155,13 +838,12 @@ spec:
       - name: CHAT_BASE_URL
         value: http://ollama:11434/v1
       - name: BASE_MODEL
-        value: "{{MODEL}}"
+        value: "granite4:350m-h"
       - name: CUSTOM_MODEL
         value: support-agent
-      # Synthetic dataset size — the import wizard can override {{N_TICKETS}}
-      # (falls back to 400 if left unset).
+      # Synthetic dataset size (number of generated support tickets).
       - name: N_TICKETS
-        value: "{{N_TICKETS}}"
+        value: "400"
       ingress:
         apiServer:
           enabled: true

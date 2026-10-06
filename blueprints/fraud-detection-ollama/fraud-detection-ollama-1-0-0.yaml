@@ -9,7 +9,7 @@ metadata:
 # Airflow generates a synthetic fraud graph (SantanderAI/gen-fraud-graph, Apache-2.0),
 # loads it into PostgreSQL, engineers graph/behavioural features, trains an XGBoost
 # classifier, and pushes per-account feature vectors into Qdrant for anomaly detection.
-# A local SUSE UI reads the results and uses a local LLM (Ollama, qwen2.5:0.5b) as an AML
+# A local SUSE UI reads the results and uses a local LLM (Ollama, granite4:350m-h) as an AML
 # analyst to explain flagged cases. All components from the SUSE Application Collection.
 #
 # Inspired by and with thanks to:
@@ -27,7 +27,7 @@ spec:
     PostgreSQL, trains an XGBoost classifier on the labelled data, and indexes per-account
     behavioural feature vectors in Qdrant for anomaly detection. A local SUSE-styled
     investigator UI shows dataset stats, model metrics and flagged accounts, and uses a
-    local LLM (Ollama, qwen2.5:0.5b) as an AML analyst to classify + explain flagged cases.
+    local LLM (Ollama, granite4:350m-h) as an AML analyst to classify + explain flagged cases.
 
     Thanks to SantanderAI/gen-fraud-graph (https://github.com/SantanderAI/gen-fraud-graph)
     for inspiring this blueprint, and to srinivas-gajulaa/genai-fraud-detection for the
@@ -36,8 +36,9 @@ spec:
 
     Prerequisites: the SUSE AI Factory operator, the application-collection ClusterRepo
     (+ credentials secret), and a default StorageClass. After importing, create an
-    AIWorkload from this Blueprint in the AI Factory UI, run the three DAGs, then launch
-    the local UI from the marketplace guide. Dataset size is controlled by SCALE_FACTOR
+    AIWorkload from this Blueprint in the AI Factory UI, trigger the three DAGs in the
+    Airflow UI (generate_fraud_dataset → engineer_and_train → flag_and_anomaly), then run
+    the local UI from ui/ (see the README next to this CR). Dataset size is controlled by SCALE_FACTOR
     (default 0.001 — the whole point of using Airflow is scaling this up).
   components:
   # ----------------------------------------------------------------------- #
@@ -45,7 +46,7 @@ spec:
   # ----------------------------------------------------------------------- #
   - chartName: postgresql
     chartRepo: application-collection
-    chartVersion: 0.6.0
+    chartVersion: 0.7.0
     values:
       fullnameOverride: fraud-db
       image:
@@ -65,7 +66,7 @@ spec:
   # ----------------------------------------------------------------------- #
   - chartName: qdrant
     chartRepo: suse-ai-registry
-    chartVersion: 1.17.0
+    chartVersion: 1.19.0
     values:
       fullnameOverride: qdrant
       persistence:
@@ -78,23 +79,23 @@ spec:
   # ----------------------------------------------------------------------- #
   - chartName: ollama
     chartRepo: application-collection
-    chartVersion: 1.55.0
+    chartVersion: 1.76.0
     values:
       fullnameOverride: ollama
       image:
         pullPolicy: IfNotPresent
         registry: dp.apps.rancher.io
         repository: containers/ollama
-        tag: 0.21.2-11.48
+        tag: 0.32.14-11.95
       ollama:
         gpu:
           enabled: false
           draEnabled: false
         models:
           pull:
-          - "{{MODEL}}"
+          - "granite4:350m-h"
           run:
-          - "{{MODEL}}"
+          - "granite4:350m-h"
         port: 11434
       persistentVolume:
         enabled: true
@@ -105,11 +106,11 @@ spec:
         port: 11434
         type: ClusterIP
   # ----------------------------------------------------------------------- #
-  # Apache Airflow — orchestrates generate → train → anomaly. DAGs via git-sync.
+  # Apache Airflow — orchestrates generate → train → anomaly. DAGs embedded in this CR.
   # ----------------------------------------------------------------------- #
   - chartName: apache-airflow
     chartRepo: application-collection
-    chartVersion: 1.22.0
+    chartVersion: 1.22.2
     values:
       executor: LocalExecutor
       # Pin Airflow's generated secret keys so the pod template is STABLE across Fleet
@@ -130,23 +131,577 @@ spec:
       # gen-fraud-graph). Installing at pod start via _PIP_ADDITIONAL_REQUIREMENTS was
       # too slow to finish before Fleet re-reconciled the migration pod, so it never
       # converged — baking the deps fixes that (pods start instantly). Build recipe:
-      # assets/fraud-detection-ollama/airflow-image/Dockerfile.
+      # the airflow-image/Dockerfile next to this CR.
       images:
         airflow:
           repository: alessandro-festa/fraud-airflow
           tag: "1.0.0"
           pullPolicy: IfNotPresent
           registry: ghcr.io
+      # --- BEGIN embedded DAGs (tools/embed-dags.py, source: ./dags; do not edit here) ---
       dags:
         gitSync:
-          enabled: true
-          repo: https://github.com/alessandro-festa/aif-community-demos.git
-          branch: main
-          ref: main
-          rev: HEAD
-          depth: 1
-          subPath: assets/fraud-detection-ollama/dags
-          period: 30s
+          enabled: false
+      extraConfigMaps:
+        airflow-dags:
+          useHelmHooks: false
+          data: |
+            clear_data.py: |2
+              """
+              DAG: clear_data
+
+              Reset utility — drops the fraud tables and the Qdrant accounts collection so you can
+              regenerate from scratch. Trigger manually.
+              """
+              from __future__ import annotations
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import ACCOUNTS_COLLECTION, qdrant_drop_collection, pg_exec
+
+
+              @dag(
+                  dag_id="clear_data",
+                  schedule=None,
+                  start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                  catchup=False,
+                  tags=["fraud", "utility"],
+              )
+              def clear_data():
+                  @task
+                  def clear() -> str:
+                      pg_exec("DROP TABLE IF EXISTS accounts, transactions, fraud_cases, "
+                              "account_scores, flagged_accounts, model_metrics CASCADE")
+                      qdrant_drop_collection(ACCOUNTS_COLLECTION)
+                      return "cleared"
+
+                  clear()
+
+
+              clear_data()
+            common.py: |2
+              """
+              Shared helpers for the fraud / AML detection DAGs.
+
+              The DAGs generate a synthetic fraud graph (SantanderAI/gen-fraud-graph), load it into
+              PostgreSQL, engineer graph/behavioural features, train an XGBoost classifier, and push
+              per-account feature vectors into Qdrant for embedding-based anomaly detection.
+
+              These DAGs need real Python libraries (pandas, numpy, networkx, scikit-learn, xgboost,
+              imbalanced-learn, psycopg2, gen-fraud-graph). They are installed into the Airflow image at
+              start via the chart's `_PIP_ADDITIONAL_REQUIREMENTS` env (see the Blueprint CR).
+
+              Config (env, injected by the apache-airflow component):
+                POSTGRES_URI   postgresql://fraud:fraud@fraud-db:5432/fraud
+                QDRANT_URL     http://qdrant:6333
+                SCALE_FACTOR   0.001   (gen-fraud-graph scale; ~10k accounts / ~90k tx / ~10 rings)
+                HIGH_VALUE     1000    (amount threshold for "suspicious" edges used in ring detection)
+                ACCOUNTS_COLLECTION  accounts
+              """
+              from __future__ import annotations
+
+              import os
+
+              import psycopg2
+              import psycopg2.extras
+              import requests
+
+              POSTGRES_URI = os.environ.get("POSTGRES_URI", "postgresql://fraud:fraud@fraud-db:5432/fraud")
+              QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333").rstrip("/")
+              QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
+              SCALE_FACTOR = float(os.environ.get("SCALE_FACTOR", "0.001"))
+              HIGH_VALUE = float(os.environ.get("HIGH_VALUE", "1000"))
+              ACCOUNTS_COLLECTION = os.environ.get("ACCOUNTS_COLLECTION", "accounts")
+              HTTP_TIMEOUT = 120
+
+              # Per-account feature vector (fixed order — used for both XGBoost and the Qdrant vector).
+              FEATURES = [
+                  "out_degree", "in_degree", "out_amount", "in_amount", "mean_amount",
+                  "max_amount", "high_value_edges", "in_cycle", "balance", "risk_score",
+              ]
+              FEATURE_DIM = len(FEATURES)
+
+
+              # --------------------------------------------------------------------------- #
+              # PostgreSQL
+              # --------------------------------------------------------------------------- #
+              def pg_conn():
+                  return psycopg2.connect(POSTGRES_URI)
+
+
+              def pg_exec(sql: str, params=None):
+                  with pg_conn() as conn, conn.cursor() as cur:
+                      cur.execute(sql, params or ())
+
+
+              def pg_insert_rows(table: str, columns: list[str], rows: list[tuple]):
+                  if not rows:
+                      return
+                  cols = ", ".join(columns)
+                  with pg_conn() as conn, conn.cursor() as cur:
+                      psycopg2.extras.execute_values(
+                          cur, f"INSERT INTO {table} ({cols}) VALUES %s", rows, page_size=1000
+                      )
+
+
+              def pg_query(sql: str, params=None) -> list[tuple]:
+                  with pg_conn() as conn, conn.cursor() as cur:
+                      cur.execute(sql, params or ())
+                      return cur.fetchall()
+
+
+              # --------------------------------------------------------------------------- #
+              # Qdrant (REST API — requests only)
+              # --------------------------------------------------------------------------- #
+              def _qdrant_headers() -> dict:
+                  h = {"Content-Type": "application/json"}
+                  if QDRANT_API_KEY:
+                      h["api-key"] = QDRANT_API_KEY
+                  return h
+
+
+              def _qdrant_request(method: str, path: str, body: dict | None = None) -> requests.Response:
+                  return requests.request(
+                      method, f"{QDRANT_URL}{path}", json=body, headers=_qdrant_headers(), timeout=HTTP_TIMEOUT
+                  )
+
+
+              def qdrant_has_collection(name: str = ACCOUNTS_COLLECTION) -> bool:
+                  r = _qdrant_request("GET", f"/collections/{name}")
+                  if r.status_code == 404:
+                      return False
+                  r.raise_for_status()
+                  return True
+
+
+              def qdrant_drop_collection(name: str = ACCOUNTS_COLLECTION) -> None:
+                  if qdrant_has_collection(name):
+                      r = _qdrant_request("DELETE", f"/collections/{name}")
+                      r.raise_for_status()
+
+
+              def qdrant_create_collection(dim: int, name: str = ACCOUNTS_COLLECTION) -> None:
+                  body = {"vectors": {"size": dim, "distance": "Cosine"}}
+                  r = _qdrant_request("PUT", f"/collections/{name}", body)
+                  r.raise_for_status()
+
+
+              def qdrant_insert(rows: list[dict], name: str = ACCOUNTS_COLLECTION) -> None:
+                  batch = 200
+                  for i in range(0, len(rows), batch):
+                      points = [
+                          {
+                              "id": row["id"],
+                              "vector": row["vector"],
+                              "payload": {k: v for k, v in row.items() if k not in ("id", "vector")},
+                          }
+                          for row in rows[i:i + batch]
+                      ]
+                      r = _qdrant_request("PUT", f"/collections/{name}/points", {"points": points})
+                      r.raise_for_status()
+
+
+              def qdrant_search(vector: list[float], top_k: int, name: str = ACCOUNTS_COLLECTION) -> list[dict]:
+                  r = _qdrant_request("POST", f"/collections/{name}/points/search", {
+                      "vector": vector,
+                      "limit": top_k,
+                      "with_payload": True,
+                  })
+                  r.raise_for_status()
+                  hits = (r.json() or {}).get("result") or []
+                  return [{**(h.get("payload") or {}), "distance": h.get("score")} for h in hits]
+
+
+              def acc_num(account_id: str) -> int:
+                  """gen-fraud-graph account ids look like 'acc_123' -> 123."""
+                  try:
+                      return int(str(account_id).split("_")[-1])
+                  except ValueError:
+                      return abs(hash(account_id)) % (10**12)
+            engineer_and_train.py: |2
+              """
+              DAG: engineer_and_train
+
+              Feature-engineer the loaded transaction graph, train an XGBoost fraud classifier on the
+              ground-truth labels (SMOTE for the heavy class imbalance), batch-score every account, and
+              record model metrics. Results land in Postgres for the UI + the anomaly DAG.
+
+              Features per account (see common.FEATURES): out/in degree, out/in amount, mean/max amount,
+              count of high-value edges, membership in a high-value cycle (money-laundering ring signal),
+              balance and risk_score.
+              """
+              from __future__ import annotations
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import FEATURES, HIGH_VALUE, acc_num, pg_exec, pg_insert_rows, pg_query
+
+
+              @dag(
+                  dag_id="engineer_and_train",
+                  schedule=None,
+                  start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                  catchup=False,
+                  tags=["fraud", "train"],
+              )
+              def engineer_and_train():
+                  @task
+                  def features() -> str:
+                      """Build per-account features + labels; store them in the account_scores table."""
+                      import networkx as nx
+                      import pandas as pd
+
+                      acc = pd.DataFrame(pg_query("SELECT account_id, balance, risk_score FROM accounts"),
+                                         columns=["account_id", "balance", "risk_score"])
+                      tx = pd.DataFrame(
+                          pg_query("SELECT src_id, dst_id, amount FROM transactions"),
+                          columns=["src_id", "dst_id", "amount"])
+                      cases = pg_query("SELECT involved_accounts FROM fraud_cases")
+
+                      # Ground-truth fraud accounts (pipe-separated involved_accounts).
+                      fraud_accounts = set()
+                      for (involved,) in cases:
+                          if involved:
+                              fraud_accounts.update(str(involved).split("|"))
+
+                      # Aggregate transaction stats per account.
+                      out_deg = tx.groupby("src_id").size()
+                      in_deg = tx.groupby("dst_id").size()
+                      out_amt = tx.groupby("src_id")["amount"].sum()
+                      in_amt = tx.groupby("dst_id")["amount"].sum()
+                      mean_amt = tx.groupby("src_id")["amount"].mean()
+                      max_amt = tx.groupby("src_id")["amount"].max()
+                      hv = tx[tx["amount"] >= HIGH_VALUE]
+                      hv_edges = hv.groupby("src_id").size()
+
+                      # High-value cycle membership (the laundering-ring signal). Detect cycles only in
+                      # the high-value subgraph so this stays cheap; decoys make topology alone insufficient
+                      # (that is where the model + LLM add value).
+                      in_cycle: set[str] = set()
+                      if len(hv):
+                          g = nx.DiGraph()
+                          g.add_edges_from(hv[["src_id", "dst_id"]].itertuples(index=False, name=None))
+                          try:
+                              for cyc in nx.simple_cycles(g, length_bound=7):
+                                  in_cycle.update(cyc)
+                          except TypeError:  # older networkx without length_bound
+                              for cyc in nx.simple_cycles(g):
+                                  if len(cyc) <= 7:
+                                      in_cycle.update(cyc)
+
+                      rows = []
+                      for r in acc.itertuples(index=False):
+                          a = r.account_id
+                          feat = {
+                              "out_degree": float(out_deg.get(a, 0)),
+                              "in_degree": float(in_deg.get(a, 0)),
+                              "out_amount": float(out_amt.get(a, 0.0)),
+                              "in_amount": float(in_amt.get(a, 0.0)),
+                              "mean_amount": float(mean_amt.get(a, 0.0)),
+                              "max_amount": float(max_amt.get(a, 0.0)),
+                              "high_value_edges": float(hv_edges.get(a, 0)),
+                              "in_cycle": 1.0 if a in in_cycle else 0.0,
+                              "balance": float(r.balance or 0.0),
+                              "risk_score": float(r.risk_score or 0.0),
+                          }
+                          label = 1 if a in fraud_accounts else 0
+                          rows.append((a, *[feat[f] for f in FEATURES], label, 0.0))
+
+                      cols = ["account_id", *FEATURES, "is_labeled_fraud", "xgb_score"]
+                      coldefs = ", ".join(f"{c} DOUBLE PRECISION" for c in FEATURES)
+                      pg_exec("DROP TABLE IF EXISTS account_scores CASCADE")
+                      pg_exec(f"""CREATE TABLE account_scores (
+                          account_id TEXT PRIMARY KEY, {coldefs},
+                          is_labeled_fraud INT, xgb_score DOUBLE PRECISION)""")
+                      pg_insert_rows("account_scores", cols, rows)
+                      return "ok"
+
+                  @task
+                  def train(_prev: str) -> dict:
+                      """Train XGBoost (SMOTE), score all accounts, and store metrics."""
+                      import numpy as np
+                      import pandas as pd
+                      from imblearn.over_sampling import SMOTE
+                      from sklearn.metrics import (f1_score, precision_score, recall_score,
+                                                   roc_auc_score)
+                      from xgboost import XGBClassifier
+
+                      df = pd.DataFrame(
+                          pg_query(f"SELECT account_id, {', '.join(FEATURES)}, is_labeled_fraud "
+                                   f"FROM account_scores"),
+                          columns=["account_id", *FEATURES, "is_labeled_fraud"])
+                      X = df[FEATURES].to_numpy(dtype=float)
+                      y = df["is_labeled_fraud"].to_numpy(dtype=int)
+
+                      metrics = {"precision": 0.0, "recall": 0.0, "f1": 0.0, "auc": 0.0,
+                                 "n_fraud": int(y.sum()), "n_accounts": int(len(y))}
+                      if y.sum() >= 5 and y.sum() < len(y):
+                          k = min(5, int(y.sum()) - 1) or 1
+                          Xr, yr = SMOTE(random_state=42, k_neighbors=k).fit_resample(X, y)
+                          model = XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.1,
+                                                eval_metric="logloss")
+                          model.fit(Xr, yr)
+                          proba = model.predict_proba(X)[:, 1]
+                          pred = (proba >= 0.5).astype(int)
+                          metrics.update({
+                              "precision": round(float(precision_score(y, pred, zero_division=0)), 4),
+                              "recall": round(float(recall_score(y, pred, zero_division=0)), 4),
+                              "f1": round(float(f1_score(y, pred, zero_division=0)), 4),
+                              "auc": round(float(roc_auc_score(y, proba)), 4) if len(set(y)) > 1 else 0.0,
+                          })
+                      else:
+                          # Not enough positives to train — fall back to the ring signal as the score.
+                          proba = df["in_cycle"].to_numpy(dtype=float) if "in_cycle" in df else np.zeros(len(df))
+
+                      for aid, s in zip(df["account_id"], proba):
+                          pg_exec("UPDATE account_scores SET xgb_score=%s WHERE account_id=%s",
+                                  (float(s), aid))
+
+                      pg_exec("DROP TABLE IF EXISTS model_metrics CASCADE")
+                      pg_exec("""CREATE TABLE model_metrics (
+                          precision DOUBLE PRECISION, recall DOUBLE PRECISION, f1 DOUBLE PRECISION,
+                          auc DOUBLE PRECISION, n_fraud INT, n_accounts INT)""")
+                      pg_insert_rows("model_metrics",
+                                     ["precision", "recall", "f1", "auc", "n_fraud", "n_accounts"],
+                                     [(metrics["precision"], metrics["recall"], metrics["f1"],
+                                       metrics["auc"], metrics["n_fraud"], metrics["n_accounts"])])
+                      return metrics
+
+                  train(features())
+
+
+              engineer_and_train()
+            flag_and_anomaly.py: |2
+              """
+              DAG: flag_and_anomaly
+
+              Push per-account behavioural feature vectors into Qdrant (COSINE) for embedding-based
+              anomaly detection, compute an anomaly score (distance to nearest neighbours), and write the
+              top flagged accounts (combining the XGBoost score, the anomaly score and ring membership)
+              into `flagged_accounts` for the investigator UI.
+              """
+              from __future__ import annotations
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import (ACCOUNTS_COLLECTION, FEATURE_DIM, FEATURES, acc_num,
+                                  qdrant_create_collection, qdrant_drop_collection, qdrant_insert,
+                                  qdrant_search, pg_exec, pg_insert_rows, pg_query)
+
+
+              @dag(
+                  dag_id="flag_and_anomaly",
+                  schedule=None,
+                  start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                  catchup=False,
+                  tags=["fraud", "anomaly"],
+              )
+              def flag_and_anomaly():
+                  @task
+                  def index() -> int:
+                      """Normalise feature vectors and (re)load them into Qdrant."""
+                      import numpy as np
+
+                      rows = pg_query(
+                          f"SELECT account_id, {', '.join(FEATURES)}, is_labeled_fraud FROM account_scores")
+                      if not rows:
+                          raise RuntimeError("no account_scores — run engineer_and_train first")
+                      ids = [r[0] for r in rows]
+                      X = np.array([[float(v) for v in r[1:1 + FEATURE_DIM]] for r in rows], dtype=float)
+                      labels = [int(r[-1]) for r in rows]
+
+                      # Min-max normalise each feature to [0,1] so COSINE distance is meaningful.
+                      lo = X.min(axis=0)
+                      rng = np.where(X.max(axis=0) - lo == 0, 1.0, X.max(axis=0) - lo)
+                      Xn = (X - lo) / rng
+
+                      qdrant_drop_collection(ACCOUNTS_COLLECTION)
+                      qdrant_create_collection(FEATURE_DIM, ACCOUNTS_COLLECTION)
+                      data = [{"id": acc_num(a), "vector": Xn[i].tolist(),
+                               "account_id": a, "is_fraud": labels[i]} for i, a in enumerate(ids)]
+                      qdrant_insert(data, ACCOUNTS_COLLECTION)
+                      return len(ids)
+
+                  @task
+                  def flag(_n: int) -> dict:
+                      """Compute anomaly scores + write the top flagged accounts."""
+                      import numpy as np
+
+                      rows = pg_query(
+                          f"SELECT account_id, {', '.join(FEATURES)}, is_labeled_fraud, xgb_score "
+                          f"FROM account_scores")
+                      ids = [r[0] for r in rows]
+                      X = np.array([[float(v) for v in r[1:1 + FEATURE_DIM]] for r in rows], dtype=float)
+                      in_ring = {r[0]: int(r[1 + FEATURES.index("in_cycle")]) for r in rows}
+                      xgb = {r[0]: float(r[-1]) for r in rows}
+
+                      lo = X.min(axis=0)
+                      rng = np.where(X.max(axis=0) - lo == 0, 1.0, X.max(axis=0) - lo)
+                      Xn = (X - lo) / rng
+
+                      pg_exec("DROP TABLE IF EXISTS flagged_accounts CASCADE")
+                      pg_exec("""CREATE TABLE flagged_accounts (
+                          account_id TEXT PRIMARY KEY, xgb_score DOUBLE PRECISION,
+                          anomaly_score DOUBLE PRECISION, in_ring INT, rank INT)""")
+
+                      # Anomaly score = 1 - mean cosine similarity to the 6 nearest neighbours
+                      # (higher = more isolated / unusual).
+                      scored = []
+                      for i, a in enumerate(ids):
+                          hits = qdrant_search(Xn[i].tolist(), 6, ACCOUNTS_COLLECTION)
+                          sims = [h.get("distance", 0.0) for h in hits][1:]  # skip self
+                          anomaly = round(1.0 - (sum(sims) / len(sims) if sims else 1.0), 4)
+                          combined = 0.7 * xgb[a] + 0.3 * anomaly
+                          scored.append((a, xgb[a], anomaly, in_ring.get(a, 0), combined))
+
+                      scored.sort(key=lambda t: t[4], reverse=True)
+                      top = scored[:50]
+                      pg_insert_rows(
+                          "flagged_accounts",
+                          ["account_id", "xgb_score", "anomaly_score", "in_ring", "rank"],
+                          [(a, xs, an, ir, rk + 1) for rk, (a, xs, an, ir, _c) in enumerate(top)])
+                      return {"flagged": len(top)}
+
+                  flag(index())
+
+
+              flag_and_anomaly()
+            generate_fraud_dataset.py: |2
+              """
+              DAG: generate_fraud_dataset
+
+              Generate a synthetic fraud graph with SantanderAI/gen-fraud-graph (Apache-2.0) and load it
+              into PostgreSQL. The dataset can be huge at higher scale — that is exactly why this runs in
+              Airflow. `SCALE_FACTOR` (default 0.001) keeps the demo small (~10k accounts / ~90k tx).
+
+              Tables created: accounts, transactions (normal + fraud edges), fraud_cases (ground truth).
+
+              Thanks to SantanderAI/gen-fraud-graph — https://github.com/SantanderAI/gen-fraud-graph
+              """
+              from __future__ import annotations
+
+              import glob
+              import tempfile
+              from pathlib import Path
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import SCALE_FACTOR, pg_exec, pg_insert_rows
+
+
+              @dag(
+                  dag_id="generate_fraud_dataset",
+                  schedule=None,
+                  start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                  catchup=False,
+                  tags=["fraud", "generate"],
+              )
+              def generate_fraud_dataset():
+                  @task
+                  def generate() -> str:
+                      """Run gen-fraud-graph into a temp dir; return the output directory."""
+                      from gen_fraud_graph import Config, FraudGraphGenerator
+
+                      out = tempfile.mkdtemp(prefix="fraudgraph_")
+                      cfg = Config(
+                          scale_factor=SCALE_FACTOR,
+                          output_dir=out,
+                          output_format="csv",
+                          embedding_provider="fake",
+                          embedding_dim=8,
+                          workers=1,
+                      )
+                      FraudGraphGenerator(cfg).run()
+                      return out
+
+                  @task
+                  def load(out: str) -> dict:
+                      """Create tables and bulk-load accounts / transactions / fraud_cases into Postgres."""
+                      import pandas as pd
+
+                      # (Re)create the schema.
+                      pg_exec("DROP TABLE IF EXISTS accounts, transactions, fraud_cases, "
+                              "account_scores, flagged_accounts, model_metrics CASCADE")
+                      pg_exec("""
+                          CREATE TABLE accounts (
+                            account_id TEXT PRIMARY KEY, customer_name TEXT,
+                            balance DOUBLE PRECISION, risk_score DOUBLE PRECISION, creation_date TEXT)""")
+                      pg_exec("""
+                          CREATE TABLE transactions (
+                            tx_id TEXT, src_id TEXT, dst_id TEXT, amount DOUBLE PRECISION,
+                            timestamp TEXT, description TEXT, is_fraud_edge INT DEFAULT 0)""")
+                      pg_exec("""
+                          CREATE TABLE fraud_cases (
+                            pattern_id TEXT, start_acc_id TEXT, pattern_type TEXT,
+                            depth INT, involved_accounts TEXT)""")
+
+                      base = Path(out)
+
+                      def read_many(pattern, cols):
+                          files = sorted(glob.glob(str(base / pattern)))
+                          frames = []
+                          for fp in files:
+                              df = pd.read_csv(fp)
+                              keep = [c for c in cols if c in df.columns]
+                              frames.append(df[keep])
+                          return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=cols)
+
+                      # Accounts.
+                      acc = read_many("accounts/*.csv",
+                                      ["account_id", "customer_name", "balance", "risk_score", "creation_date"])
+                      pg_insert_rows("accounts",
+                                     ["account_id", "customer_name", "balance", "risk_score", "creation_date"],
+                                     list(acc.itertuples(index=False, name=None)))
+
+                      # Normal transactions. Note: the rows carry an extra is_fraud_edge value,
+                      # so the INSERT column list must include it too.
+                      tx_cols = ["tx_id", "src_id", "dst_id", "amount", "timestamp", "description"]
+                      tx_insert_cols = tx_cols + ["is_fraud_edge"]
+                      tx = read_many("transactions/*.csv", tx_cols)
+                      pg_insert_rows("transactions", tx_insert_cols,
+                                     [(*r, 0) for r in tx.itertuples(index=False, name=None)])
+
+                      # Fraud (labelled) transaction edges.
+                      ftx = read_many("fraud/transactions_fraud.csv", tx_cols)
+                      pg_insert_rows("transactions", tx_insert_cols,
+                                     [(*r, 1) for r in ftx.itertuples(index=False, name=None)])
+
+                      # Ground-truth fraud cases (laundering rings).
+                      fc_cols = ["pattern_id", "start_acc_id", "pattern_type", "depth", "involved_accounts"]
+                      fc = read_many("fraud/fraud_cases.csv", fc_cols)
+                      pg_insert_rows("fraud_cases", fc_cols,
+                                     list(fc.itertuples(index=False, name=None)))
+
+                      return {"accounts": len(acc), "transactions": len(tx) + len(ftx), "rings": len(fc)}
+
+                  load(generate())
+
+
+              generate_fraud_dataset()
+      volumes:
+      - name: dags
+        configMap:
+          name: airflow-dags
+          items:
+          - key: clear_data.py
+            path: clear_data.py
+          - key: common.py
+            path: common.py
+          - key: engineer_and_train.py
+            path: engineer_and_train.py
+          - key: flag_and_anomaly.py
+            path: flag_and_anomaly.py
+          - key: generate_fraud_dataset.py
+            path: generate_fraud_dataset.py
+      volumeMounts:
+      - name: dags
+        mountPath: /opt/airflow/dags
+        readOnly: true
+      # --- END embedded DAGs ---
       env:
       - name: POSTGRES_URI
         value: postgresql://fraud:fraud@fraud-db:5432/fraud

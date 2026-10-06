@@ -8,10 +8,10 @@ metadata:
 # SUSE VSC — an all-SUSE / non-NVIDIA take on Video Search and Summarization,
 # running purely on CPU. Ported from the sims example blueprint, with one change:
 # the in-cluster suse-vss-ui chart component is REMOVED. The UI here runs as a
-# LOCAL frontend, started by the Blueprint Marketplace and pointed at the
+# LOCAL frontend, run locally from ui/ (see README) and pointed at the
 # in-cluster Ollama + Qdrant via kubectl port-forward. So this Blueprint CR only
 # deploys the two backend services:
-#   * Ollama — moondream:1.8b multimodal (vision+text) model for frame/image
+#   * Ollama — minicpm-v4.6:1b multimodal (vision+text) model for frame/image
 #     understanding + summarization (CPU). Frame search uses an in-app CLIP model
 #     inside the local UI, not Ollama.
 #   * Qdrant — stores each frame's CLIP image embedding, thumbnail and metadata.
@@ -23,12 +23,12 @@ spec:
   version: 1.0.0
   description: |
     SUSE VSC — an all-SUSE / non-NVIDIA Video Search and Summarization stack,
-    running purely on CPU. Ollama serves moondream:1.8b (small multimodal
+    running purely on CPU. Ollama serves minicpm-v4.6:1b (small multimodal
     vision+text model for frame/image understanding + summarization); Qdrant stores
     each frame's CLIP embedding, thumbnail and metadata.
 
     This Blueprint deploys only the backend services (Ollama + Qdrant). The SUSE VSC
-    UI runs locally via the Blueprint Marketplace (ingest a video by URL / upload /
+    UI runs locally from the ui/ folder (ingest a video by URL / upload /
     webcam / YouTube / RTSP, run a pre-baked or custom prompt, and search past frames
     by text via CLIP), connecting to the cluster over kubectl port-forward. No NVIDIA
     components — no nvcr.io image, no NGC token, no nvidia-blueprints repo, no
@@ -36,12 +36,12 @@ spec:
 
     Prerequisites: the SUSE AI Factory operator, the application-collection
     ClusterRepo (+ credentials secret), a default StorageClass, and cert-manager.
-    After importing, create an AIWorkload from this Blueprint in the AI Factory UI,
-    then launch the local UI from the marketplace guide.
+    After kubectl apply, create an AIWorkload from this Blueprint in the AI Factory
+    UI, then run the local UI as described in the README.
   components:
   - chartName: ollama
     chartRepo: application-collection
-    chartVersion: 1.55.0
+    chartVersion: 1.76.0
     values:
       # Pin the service name so the local UI's port-forward + URLs are stable.
       fullnameOverride: ollama
@@ -49,19 +49,19 @@ spec:
         pullPolicy: IfNotPresent
         registry: dp.apps.rancher.io
         repository: containers/ollama
-        tag: 0.21.2-11.48
+        tag: 0.32.14-11.95
       ollama:
         gpu:
           # CPU-only — Ollama runs the model on CPU by default.
           enabled: false
           draEnabled: false
         models:
-          # moondream:1.8b is a small CPU-friendly multimodal model (VLM + chat).
+          # minicpm-v4.6:1b is a small CPU-friendly multimodal model (VLM + chat).
           # Frame search embeddings are produced by an in-app CLIP model, not Ollama.
           pull:
-          - moondream:1.8b
+          - minicpm-v4.6:1b
           run:
-          - moondream:1.8b
+          - minicpm-v4.6:1b
         port: 11434
       # Persist the pulled models so a pod restart doesn't re-download them.
       persistentVolume:
@@ -78,7 +78,7 @@ spec:
         type: ClusterIP
   - chartName: qdrant
     chartRepo: suse-ai-registry
-    chartVersion: 1.17.0
+    chartVersion: 1.19.0
     values:
       # Pin the service name so the local UI's port-forward + URLs are stable.
       fullnameOverride: qdrant

@@ -14,12 +14,12 @@ metadata:
 #      (base model + SYSTEM persona + few-shot messages) and `ollama create` a
 #      custom model tag. This is the CPU-friendly, no-GPU analogue of the
 #      original's OpenAI hosted fine-tuning.
-# A local FastAPI + SUSE-styled demo UI (assets/airflow-genai-rag/ui) then does
+# A local FastAPI + SUSE-styled demo UI (ui/ next to this CR) then does
 # RAG: embed a topic -> Qdrant search -> generate a grounded post with the custom model.
 #
 # All three components come from the SUSE Application Collection. The Airflow DAGs
-# are delivered via git-sync from a public repo (set dags.gitSync.repo/subPath below);
-# the DAGs talk to Ollama and Qdrant over HTTP (requests only) so the stock Airflow
+# (dags/ next to this CR) are embedded below as a ConfigMap, so nothing is pulled
+# from git; the DAGs talk to Ollama and Qdrant over HTTP (requests only) so the stock Airflow
 # image needs no extra Python packages.
 spec:
   source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
@@ -42,15 +42,12 @@ spec:
       * A default StorageClass (Airflow/Ollama/Qdrant all use PVCs).
       * cert-manager (for the Airflow UI ingress TLS).
 
-    Before importing, push this blueprint folder to a PUBLIC git repo and point the
-    apache-airflow component's `dags.gitSync.repo` + `subPath` at it (defaults below
-    are placeholders).
-
     After the AIWorkload is Ready:
       * Reach the Airflow UI via the `airflow-genai` ingress host (add a DNS / hosts
-        entry to the cluster ingress). Trigger `ingest_knowledge_base`, then
-        `customize_model`.
-      * Run the demo UI locally — see assets/airflow-genai-rag/README.md.
+        entry to the cluster ingress) or
+        `kubectl port-forward svc/apache-airflow-api-server 8080:8080`.
+        Trigger `ingest_knowledge_base`, then `customize_model`.
+      * Run the demo UI locally from ui/ — see the README next to this CR.
   components:
   # ----------------------------------------------------------------------------
   # Ollama — local LLM inference (chat + embeddings), CPU only.
@@ -58,14 +55,14 @@ spec:
   # ----------------------------------------------------------------------------
   - chartName: ollama
     chartRepo: application-collection
-    chartVersion: 1.55.0
+    chartVersion: 1.76.0
     values:
       fullnameOverride: ollama
       image:
         pullPolicy: IfNotPresent
         registry: dp.apps.rancher.io
         repository: containers/ollama
-        tag: 0.21.2-11.48
+        tag: 0.32.14-11.95
       ollama:
         gpu:
           # CPU-only — no GPU required for this blueprint.
@@ -74,10 +71,10 @@ spec:
         models:
           # A small CPU-friendly chat model + the embedding model used for RAG.
           pull:
-          - "{{MODEL}}"
+          - "granite4:350m-h"
           - nomic-embed-text
           run:
-          - "{{MODEL}}"
+          - "granite4:350m-h"
         port: 11434
       # Persist pulled models across pod restarts.
       persistentVolume:
@@ -99,7 +96,7 @@ spec:
   # ----------------------------------------------------------------------------
   - chartName: qdrant
     chartRepo: suse-ai-registry
-    chartVersion: 1.17.0
+    chartVersion: 1.19.0
     values:
       fullnameOverride: qdrant
       persistence:
@@ -109,12 +106,12 @@ spec:
         type: ClusterIP
   # ----------------------------------------------------------------------------
   # Apache Airflow — orchestrates the ingestion + customization DAGs.
-  # DAGs are pulled via git-sync from a public repo; they use `requests` only, so
+  # DAGs are embedded in this CR (see the end of this component); they use `requests` only, so
   # no extra pip packages are needed in the Airflow image.
   # ----------------------------------------------------------------------------
   - chartName: apache-airflow
     chartRepo: application-collection
-    chartVersion: 1.22.0
+    chartVersion: 1.22.2
     values:
       # LocalExecutor keeps the footprint small (no Celery workers / Redis needed
       # for a demo). The bundled PostgreSQL is used for metadata.
@@ -127,22 +124,520 @@ spec:
       images:
         airflow:
           repository: containers/apache-airflow
-          tag: 3.2.2-8.14
+          tag: 3.3.2-13.2
           pullPolicy: IfNotPresent
           registry: dp.apps.rancher.io
-      # Deliver the DAGs from a public git repo. EDIT repo + subPath to point at
-      # wherever you pushed this blueprint folder (see README).
+      # --- BEGIN embedded DAGs (tools/embed-dags.py, source: ./dags; do not edit here) ---
       dags:
         gitSync:
-          enabled: true
-          repo: https://github.com/alessandro-festa/aif-community-demos.git
-          branch: main
-          ref: main
-          rev: HEAD
-          depth: 1
-          # DAGs live under this path within the repo.
-          subPath: assets/airflow-genai-rag/dags
-          period: 30s
+          enabled: false
+      extraConfigMaps:
+        airflow-dags:
+          useHelmHooks: false
+          data: |
+            clear_qdrant.py: |2
+              """
+              DAG: clear_qdrant
+
+              Utility DAG that drops the Qdrant `kb` collection, so you can re-ingest the
+              knowledge base from scratch. Trigger manually from the Airflow UI.
+              """
+              from __future__ import annotations
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import KB_COLLECTION, qdrant_drop_collection
+
+
+              @dag(
+                  dag_id="clear_qdrant",
+                  schedule=None,
+                  start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                  catchup=False,
+                  tags=["genai-rag", "utility"],
+              )
+              def clear_qdrant():
+                  @task
+                  def drop() -> str:
+                      qdrant_drop_collection(KB_COLLECTION)
+                      return f"dropped collection {KB_COLLECTION}"
+
+                  drop()
+
+
+              clear_qdrant()
+            common.py: |2
+              """
+              Shared helpers for the Airflow GenAI RAG DAGs.
+
+              Everything here talks to Ollama and Qdrant over plain HTTP using `requests`
+              (shipped in the stock Apache Airflow image), so the DAGs need no extra pip
+              packages when mounted from the Blueprint CR.
+
+              Endpoints (in-cluster defaults, overridable via env on the Airflow pods):
+                OLLAMA_BASE_URL   http://ollama:11434     Ollama REST API
+                QDRANT_URL        http://qdrant:6333      Qdrant REST API
+                EMBED_MODEL       nomic-embed-text        embedding model
+                BASE_MODEL        granite4:350m-h            base chat model to customize from
+                CUSTOM_MODEL      astra-custom            name of the created custom model
+                QDRANT_API_KEY    (unset)                 optional Qdrant API key
+                KB_COLLECTION     kb                      Qdrant collection name
+              """
+              from __future__ import annotations
+
+              import os
+              from pathlib import Path
+
+              import requests
+
+              OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
+              QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333").rstrip("/")
+              EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
+              BASE_MODEL = os.environ.get("BASE_MODEL", "granite4:350m-h")
+              CUSTOM_MODEL = os.environ.get("CUSTOM_MODEL", "astra-custom")
+              QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
+              KB_COLLECTION = os.environ.get("KB_COLLECTION", "kb")
+
+              # The knowledge base + example posts ship with the DAGs (dags/include/), so they
+              # are mounted into the Airflow pods together with the DAG files. No resolve():
+              # ConfigMap-mounted files are symlinks into a hidden ..data directory.
+              INCLUDE_DIR = Path(__file__).parent / "include"
+              KB_DIR = INCLUDE_DIR / "knowledge_base"
+              EXAMPLES_DIR = INCLUDE_DIR / "examples"
+
+              HTTP_TIMEOUT = 120
+
+
+              # --------------------------------------------------------------------------- #
+              # Ollama
+              # --------------------------------------------------------------------------- #
+              def ollama_embed(text: str, model: str = EMBED_MODEL) -> list[float]:
+                  """Return the embedding vector for `text` using Ollama /api/embed."""
+                  resp = requests.post(
+                      f"{OLLAMA_BASE_URL}/api/embed",
+                      json={"model": model, "input": text},
+                      timeout=HTTP_TIMEOUT,
+                  )
+                  resp.raise_for_status()
+                  data = resp.json()
+                  embeddings = data.get("embeddings") or []
+                  if not embeddings:
+                      raise RuntimeError(f"Ollama returned no embedding for model {model!r}: {data}")
+                  return embeddings[0]
+
+
+              def ollama_create_model(
+                  name: str,
+                  from_model: str,
+                  system: str,
+                  messages: list[dict],
+              ) -> None:
+                  """
+                  Create/overwrite an Ollama model from a base model plus a system persona and
+                  few-shot example messages. This is the CPU-friendly, no-GPU analogue of the
+                  original use case's OpenAI hosted fine-tuning.
+                  """
+                  payload = {
+                      "model": name,
+                      "from": from_model,
+                      "system": system,
+                      "stream": False,
+                  }
+                  if messages:
+                      payload["messages"] = messages
+                  resp = requests.post(
+                      f"{OLLAMA_BASE_URL}/api/create", json=payload, timeout=HTTP_TIMEOUT
+                  )
+                  resp.raise_for_status()
+
+
+              def ollama_tags() -> list[str]:
+                  """List the model tags currently available on the Ollama server."""
+                  resp = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=HTTP_TIMEOUT)
+                  resp.raise_for_status()
+                  return [m["name"] for m in resp.json().get("models", [])]
+
+
+              # --------------------------------------------------------------------------- #
+              # Qdrant (REST API)
+              # --------------------------------------------------------------------------- #
+              def _qdrant_headers() -> dict:
+                  headers = {"Content-Type": "application/json"}
+                  if QDRANT_API_KEY:
+                      headers["api-key"] = QDRANT_API_KEY
+                  return headers
+
+
+              def qdrant_has_collection(name: str = KB_COLLECTION) -> bool:
+                  resp = requests.get(
+                      f"{QDRANT_URL}/collections/{name}",
+                      headers=_qdrant_headers(),
+                      timeout=HTTP_TIMEOUT,
+                  )
+                  if resp.status_code == 404:
+                      return False
+                  resp.raise_for_status()
+                  return True
+
+
+              def qdrant_drop_collection(name: str = KB_COLLECTION) -> None:
+                  if qdrant_has_collection(name):
+                      resp = requests.delete(
+                          f"{QDRANT_URL}/collections/{name}",
+                          headers=_qdrant_headers(),
+                          timeout=HTTP_TIMEOUT,
+                      )
+                      resp.raise_for_status()
+
+
+              def qdrant_create_collection(dim: int, name: str = KB_COLLECTION) -> None:
+                  """Create a KB collection sized for `dim`-length COSINE vectors. Qdrant
+                  collections are schemaless for payload fields (text/title/source), so no
+                  field-by-field schema is needed beyond the vector itself."""
+                  resp = requests.put(
+                      f"{QDRANT_URL}/collections/{name}",
+                      json={"vectors": {"size": dim, "distance": "Cosine"}},
+                      headers=_qdrant_headers(),
+                      timeout=HTTP_TIMEOUT,
+                  )
+                  resp.raise_for_status()
+
+
+              def qdrant_insert(rows: list[dict], name: str = KB_COLLECTION) -> None:
+                  """Insert rows (each: id, vector, text, title, source) in batches."""
+                  batch = 100
+                  for i in range(0, len(rows), batch):
+                      points = [
+                          {
+                              "id": row["id"],
+                              "vector": row["vector"],
+                              "payload": {
+                                  k: v for k, v in row.items() if k not in ("id", "vector")
+                              },
+                          }
+                          for row in rows[i : i + batch]
+                      ]
+                      resp = requests.put(
+                          f"{QDRANT_URL}/collections/{name}/points",
+                          json={"points": points},
+                          headers=_qdrant_headers(),
+                          timeout=HTTP_TIMEOUT,
+                      )
+                      resp.raise_for_status()
+
+
+              # --------------------------------------------------------------------------- #
+              # Text utilities
+              # --------------------------------------------------------------------------- #
+              def chunk_text(text: str, size: int = 900, overlap: int = 150) -> list[str]:
+                  """Simple fixed-size character chunker with overlap (no LangChain needed)."""
+                  text = " ".join(text.split())
+                  if not text:
+                      return []
+                  chunks, start = [], 0
+                  while start < len(text):
+                      end = start + size
+                      chunks.append(text[start:end])
+                      start = end - overlap
+                      if start <= 0:
+                          break
+                  return chunks
+            customize_model.py: |2
+              """
+              DAG: customize_model
+
+              Model-customization pipeline — the CPU-friendly, no-GPU analogue of the original
+              use case's OpenAI hosted fine-tuning. Instead of training weights, it teaches the
+              base model a house *style* via an Ollama Modelfile:
+
+                  read include/examples/*.txt -> build (system persona + few-shot messages)
+                    -> POST /api/create on Ollama -> custom model tag `astra-custom`
+
+              Each example file: the first line is the post's topic/title, the rest is the
+              post body written in the target style. These become user/assistant message pairs
+              so the customized model mimics the tone. Trigger manually from the Airflow UI.
+              """
+              from __future__ import annotations
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import (
+                  BASE_MODEL,
+                  CUSTOM_MODEL,
+                  EXAMPLES_DIR,
+                  ollama_create_model,
+                  ollama_tags,
+              )
+
+              SYSTEM_PERSONA = (
+                  "You are Astra, a social-media copywriter for the Apache Airflow and SUSE AI "
+                  "community. Write short, punchy, technically accurate posts (2-4 sentences). "
+                  "Ground every post in the facts provided to you and never invent features. "
+                  "Match the upbeat, practical tone of the examples you were trained on."
+              )
+
+
+              @dag(
+                  dag_id="customize_model",
+                  schedule=None,
+                  start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                  catchup=False,
+                  tags=["genai-rag", "customize"],
+              )
+              def customize_model():
+                  @task
+                  def build_messages() -> list[dict]:
+                      """Turn each example post into a user/assistant few-shot message pair."""
+                      examples = sorted(EXAMPLES_DIR.glob("*.txt"))
+                      if not examples:
+                          raise FileNotFoundError(f"No example posts found in {EXAMPLES_DIR}")
+                      messages: list[dict] = []
+                      for ex in examples:
+                          lines = ex.read_text(encoding="utf-8").strip().splitlines()
+                          if not lines:
+                              continue
+                          title = lines[0].lstrip("# ").strip()
+                          body = "\n".join(lines[1:]).strip()
+                          if not title or not body:
+                              continue
+                          messages.append(
+                              {"role": "user", "content": f"Write a post about: {title}"}
+                          )
+                          messages.append({"role": "assistant", "content": body})
+                      if not messages:
+                          raise ValueError("No usable example posts (need a title line + body).")
+                      return messages
+
+                  @task
+                  def create_model(messages: list[dict]) -> str:
+                      """Create the customized Ollama model and verify it appears in /api/tags."""
+                      ollama_create_model(
+                          name=CUSTOM_MODEL,
+                          from_model=BASE_MODEL,
+                          system=SYSTEM_PERSONA,
+                          messages=messages,
+                      )
+                      tags = ollama_tags()
+                      if not any(t.split(":")[0] == CUSTOM_MODEL for t in tags):
+                          raise RuntimeError(
+                              f"Model {CUSTOM_MODEL!r} not found after create; tags={tags}"
+                          )
+                      return CUSTOM_MODEL
+
+                  create_model(build_messages())
+
+
+              customize_model()
+            include__examples__01-dags-as-code.txt: |2
+              DAGs are just Python
+              Your pipelines live in version control, get code-reviewed, and run in CI — because in Airflow a DAG is just Python. No clicking through a GUI, no drift between "what's deployed" and "what's in git". Author it, test it, ship it. #ApacheAirflow #DataEngineering
+            include__examples__02-local-llms.txt: |2
+              Run your LLM where your data lives
+              No API keys, no per-token bill, no data leaving the cluster. Ollama serves open models like llama3.2 right next to your pipeline, and it speaks plain HTTP so your Airflow tasks can call it in three lines. Private by default. #LocalLLM #Ollama
+            include__examples__03-rag-grounding.txt: |2
+              Stop your model from making things up
+              RAG grounds every answer in your own docs: embed the question, pull the closest chunks from Qdrant, hand them to the model as context. The result cites real facts instead of confident guesses. Retrieval first, generation second. #RAG #VectorSearch
+            include__examples__04-suse-app-collection.txt: |2
+              One catalog, hardened and consistent
+              Airflow, Ollama, and Qdrant — a hardened stack from the SUSE Application Collection plus a lightweight vector database. Compose them into a Blueprint, import it into AI Factory, and deploy the whole stack as one workload. #SUSE #AIFactory
+            include__knowledge_base__airflow-basics.md: |2
+              # Apache Airflow Basics
+
+              Apache Airflow is an open-source platform to programmatically author, schedule, and
+              monitor workflows. Workflows are defined as Directed Acyclic Graphs (DAGs) written
+              in Python, where each node is a task and edges express dependencies between tasks.
+
+              A DAG describes *what* to run and *in what order*; it does not perform the work
+              itself. The Airflow scheduler parses DAG files, decides which task instances are
+              ready to run based on their dependencies and schedule, and hands them to an
+              executor. The metadata database records the state of every DAG run and task
+              instance, which is what powers the web UI's grid and graph views.
+
+              Tasks are created from operators. Common operators include the PythonOperator (run
+              a Python callable), the BashOperator (run a shell command), and the
+              KubernetesPodOperator (run a container as a pod). The TaskFlow API, using the
+              `@dag` and `@task` decorators, lets you write plain Python functions that Airflow
+              turns into tasks, passing return values between them as XComs automatically.
+
+              Scheduling is controlled by the `schedule` argument. Setting `schedule=None` makes a
+              DAG manual-trigger only, which is ideal for pipelines you kick off on demand. The
+              `catchup` flag controls whether Airflow backfills missed runs between the DAG's
+              start date and now; for demo pipelines it is usually set to `False`.
+            include__knowledge_base__rag-with-ollama-qdrant.md: |2
+              # RAG with Ollama and Qdrant
+
+              Retrieval-Augmented Generation (RAG) grounds a large language model's answers in
+              your own data. Instead of relying only on what the model learned during training,
+              a RAG pipeline retrieves relevant passages from a knowledge base at query time and
+              includes them in the prompt, so the model can cite current, domain-specific facts.
+
+              A RAG pipeline has two phases. In the ingestion phase you split source documents
+              into chunks, compute an embedding vector for each chunk, and store those vectors in
+              a vector database. In the retrieval phase you embed the user's query with the same
+              embedding model, run a nearest-neighbor search against the stored vectors, and pass
+              the top matches to the language model as context.
+
+              Ollama runs open language models locally and exposes a simple HTTP API. The
+              `/api/embed` endpoint returns embeddings — this blueprint uses the
+              `nomic-embed-text` model for that — while `/api/generate` and `/api/chat` produce
+              text. Because Ollama runs on CPU here, it favors small models such as
+              `llama3.2:1b`, which keep latency reasonable without a GPU.
+
+              Qdrant is a lightweight, open-source vector database. A collection stores vectors
+              alongside a payload of scalar metadata such as the chunk text, its title, and its
+              source document. Collections are schemaless for the payload — you only declare the
+              vector size and distance metric (COSINE works well for text embeddings) when
+              creating one, and the payload fields can be anything. Qdrant exposes a simple
+              RESTful API, so clients can create collections, upsert points, and search using
+              plain HTTP.
+
+              Choosing the embedding model matters: the same model must be used for both
+              ingestion and querying, because vectors are only comparable within the same model's
+              space. If you change the embedding model, re-ingest the whole knowledge base so the
+              stored vectors and the query vectors line up.
+            include__knowledge_base__suse-ai-factory.md: |2
+              # SUSE AI Factory and the Application Collection
+
+              SUSE AI Factory is the AI platform management layer built into Rancher. It lets
+              platform teams discover AI applications, compose them into validated stacks,
+              publish those stacks as reusable blueprints, and deploy and monitor AI workloads on
+              any Rancher-managed Kubernetes cluster.
+
+              A Blueprint is a cluster-scoped custom resource that lists the components — Helm
+              charts — that make up an AI stack, along with the values each chart should use.
+              Importing a Blueprint (for example with `kubectl apply`) adds it to the AI Factory
+              catalog. To actually run it, a user creates an AIWorkload from the Blueprint, which
+              tells the operator to deploy the components into a target namespace.
+
+              Each Blueprint component references a chart by name, by the Rancher ClusterRepo it
+              comes from, and by version. The SUSE Application Collection is the primary source:
+              an OCI registry at dp.apps.rancher.io that publishes hardened Helm charts and
+              container images, including Apache Airflow and Ollama. Charts pull images from the
+              same registry and use a shared image-pull secret, which keeps deployments
+              consistent and air-gap friendly.
+
+              This blueprint composes Apache Airflow, Ollama, and Qdrant into a small GenAI
+              pipeline: Airflow orchestrates knowledge-base ingestion and model customization,
+              Ollama serves the language and embedding models, and Qdrant stores the retrieval
+              index.
+            ingest_knowledge_base.py: |2
+              """
+              DAG: ingest_knowledge_base
+
+              RAG ingestion pipeline (the SUSE/Ollama analogue of the original use case's
+              Weaviate ingestion). For each markdown file in include/knowledge_base/:
+
+                  read -> chunk -> embed (Ollama nomic-embed-text) -> upsert into Qdrant
+
+              The Qdrant `kb` collection is dropped and recreated on every run so ingestion is
+              idempotent. Trigger manually from the Airflow UI.
+              """
+              from __future__ import annotations
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import (
+                  KB_COLLECTION,
+                  KB_DIR,
+                  chunk_text,
+                  ollama_embed,
+                  qdrant_create_collection,
+                  qdrant_drop_collection,
+                  qdrant_insert,
+              )
+
+
+              @dag(
+                  dag_id="ingest_knowledge_base",
+                  schedule=None,
+                  start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                  catchup=False,
+                  tags=["genai-rag", "ingest"],
+              )
+              def ingest_knowledge_base():
+                  @task
+                  def read_and_chunk() -> list[dict]:
+                      """Read every KB markdown file and split it into overlapping chunks."""
+                      docs = sorted(KB_DIR.glob("*.md"))
+                      if not docs:
+                          raise FileNotFoundError(f"No knowledge-base files found in {KB_DIR}")
+                      records: list[dict] = []
+                      for doc in docs:
+                          raw = doc.read_text(encoding="utf-8").strip()
+                          # First markdown heading (if any) becomes the title.
+                          first = raw.splitlines()[0] if raw else doc.stem
+                          title = first.lstrip("# ").strip() or doc.stem
+                          for chunk in chunk_text(raw):
+                              records.append(
+                                  {"text": chunk, "title": title, "source": doc.name}
+                              )
+                      if not records:
+                          raise ValueError("Knowledge base produced no chunks.")
+                      return records
+
+                  @task
+                  def embed_and_upsert(records: list[dict]) -> int:
+                      """Embed each chunk with Ollama and upsert the vectors into Qdrant."""
+                      rows: list[dict] = []
+                      dim = 0
+                      for idx, rec in enumerate(records):
+                          vector = ollama_embed(rec["text"])
+                          dim = len(vector)
+                          rows.append(
+                              {
+                                  "id": idx,
+                                  "vector": vector,
+                                  "text": rec["text"],
+                                  "title": rec["title"],
+                                  "source": rec["source"],
+                              }
+                          )
+
+                      # Recreate the collection with the right dimensionality, then insert.
+                      qdrant_drop_collection(KB_COLLECTION)
+                      qdrant_create_collection(dim, KB_COLLECTION)
+                      qdrant_insert(rows, KB_COLLECTION)
+                      return len(rows)
+
+                  embed_and_upsert(read_and_chunk())
+
+
+              ingest_knowledge_base()
+      volumes:
+      - name: dags
+        configMap:
+          name: airflow-dags
+          items:
+          - key: clear_qdrant.py
+            path: clear_qdrant.py
+          - key: common.py
+            path: common.py
+          - key: customize_model.py
+            path: customize_model.py
+          - key: include__examples__01-dags-as-code.txt
+            path: include/examples/01-dags-as-code.txt
+          - key: include__examples__02-local-llms.txt
+            path: include/examples/02-local-llms.txt
+          - key: include__examples__03-rag-grounding.txt
+            path: include/examples/03-rag-grounding.txt
+          - key: include__examples__04-suse-app-collection.txt
+            path: include/examples/04-suse-app-collection.txt
+          - key: include__knowledge_base__airflow-basics.md
+            path: include/knowledge_base/airflow-basics.md
+          - key: include__knowledge_base__rag-with-ollama-qdrant.md
+            path: include/knowledge_base/rag-with-ollama-qdrant.md
+          - key: include__knowledge_base__suse-ai-factory.md
+            path: include/knowledge_base/suse-ai-factory.md
+          - key: ingest_knowledge_base.py
+            path: ingest_knowledge_base.py
+      volumeMounts:
+      - name: dags
+        mountPath: /opt/airflow/dags
+        readOnly: true
+      # --- END embedded DAGs ---
       # In-cluster service endpoints the DAGs read from (see dags/*.py).
       env:
       - name: OLLAMA_BASE_URL
@@ -152,7 +647,7 @@ spec:
       - name: EMBED_MODEL
         value: nomic-embed-text
       - name: BASE_MODEL
-        value: "{{MODEL}}"
+        value: "granite4:350m-h"
       - name: CUSTOM_MODEL
         value: astra-custom
       # Expose the Airflow 3 API Server (the web UI) via ingress.

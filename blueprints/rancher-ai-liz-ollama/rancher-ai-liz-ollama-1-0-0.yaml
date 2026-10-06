@@ -6,7 +6,7 @@
 # workaround below) goes to Edu Minguez.
 #
 # It deploys Rancher AI Assistant end-to-end:
-#   - Ollama, preloaded with a micro tool-calling model (qwen2.5:1.5b, CPU inference).
+#   - Ollama, preloaded with a micro tool-calling model (granite4:1b-h, CPU inference).
 #     This is the CPU/micro variant; a future GPU variant of this blueprint would swap
 #     in a larger model such as gpt-oss:20b (Edu's original example) for better
 #     tool-calling quality.
@@ -41,7 +41,7 @@ spec:
   description: |
     Deploys Rancher AI Assistant ("Liz"): the rancher-ai-agent chart, the rancher-ai-ui
     extension, and an Ollama instance preloaded with a micro tool-calling model
-    (qwen2.5:1.5b, CPU inference). Install on the cluster where Rancher itself runs.
+    (granite4:1b-h, CPU inference). Install on the cluster where Rancher itself runs.
 
     This is the CPU/micro variant, sized to run without a GPU or heavy RAM headroom. A
     future GPU variant of this blueprint would swap in a larger model (e.g. gpt-oss:20b)
@@ -62,7 +62,7 @@ spec:
     (a confirmed Fleet bug prevents resolving the official chart's version tag).
 
     NOTES:
-    - Liz's agents rely on function/tool calling; qwen2.5:1.5b is fast on CPU but
+    - Liz's agents rely on function/tool calling; granite4:1b-h is fast on CPU but
       tool-calling reliability at this size is worth a spot-check once it's running.
     - Liz's init fails until the Ollama model exists; it retries automatically, or force
       it with: kubectl rollout restart deployment rancher-ai-agent -n cattle-ai-agent-system
@@ -72,11 +72,11 @@ spec:
       or via Rancher -> Extensions).
   components:
   # ----------------------------------------------------------------------- #
-  # Ollama — local LLM backend for Liz's agents, CPU, qwen2.5:1.5b (micro).
+  # Ollama — local LLM backend for Liz's agents, CPU, granite4:1b-h (micro).
   # ----------------------------------------------------------------------- #
   - chartName: ollama
     chartRepo: application-collection
-    chartVersion: 1.55.0
+    chartVersion: 1.76.0
     targetNamespace: cattle-ai-agent-system
     values:
       affinity: {}
@@ -105,7 +105,7 @@ spec:
         pullPolicy: IfNotPresent
         registry: dp.apps.rancher.io
         repository: containers/ollama
-        tag: 0.21.2-11.48
+        tag: 0.32.14-11.95
       imagePullSecrets: []
       ingress:
         annotations: {}
@@ -156,9 +156,9 @@ spec:
           clean: false
           create: []
           pull:
-          - qwen2.5:1.5b
+          - granite4:1b-h
           run:
-          - qwen2.5:1.5b
+          - granite4:1b-h
         mountPath: ""
         port: 11434
       persistentVolume:
@@ -229,7 +229,7 @@ spec:
     values:
       activeLlm: "ollama"
       ollamaUrl: "http://ollama:11434"
-      ollamaLlmModel: "qwen2.5:1.5b"
+      ollamaLlmModel: "granite4:1b-h"
   # ----------------------------------------------------------------------- #
   # Liz UI extension: the rancher-ai-ui chart, which creates the UIPlugin CR that
   # surfaces the assistant inside the Rancher UI.
