@@ -795,6 +795,7 @@ spec:
                       "targets": [
                         {
                           "expr": "sum(node_total_hourly_cost)",
+                          "instant": true,
                           "refId": "A"
                         }
                       ]
@@ -821,6 +822,7 @@ spec:
                       "targets": [
                         {
                           "expr": "sum(node_total_hourly_cost) * 730",
+                          "instant": true,
                           "refId": "A"
                         }
                       ]
@@ -828,6 +830,7 @@ spec:
                     {
                       "type": "timeseries",
                       "title": "Node cost breakdown ($/hr)",
+                      "timeFrom": "6h",
                       "datasource": {
                         "type": "prometheus",
                         "uid": "prometheus"
