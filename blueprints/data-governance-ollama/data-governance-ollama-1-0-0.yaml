@@ -521,11 +521,13 @@ spec:
               """
               from __future__ import annotations
 
+              import re
+
               import pendulum
               from airflow.decorators import dag, task
 
               from common import (
-                  ENTERPRISE_DB, REGISTRY_DB, om_try, pg_query, wait_for_openmetadata,
+                  ENTERPRISE_DB, REGISTRY_DB, om_request, om_try, pg_query, wait_for_openmetadata,
               )
 
               ISO_CCY = {"EUR", "USD", "GBP", "CHF", "JPY", "PLN"}
@@ -608,20 +610,40 @@ spec:
                               {"name": "customer_id", "timestamp": ts, "valuesCount": dq["rows"]},
                           ],
                       }, "table profile")
-                      # A logical test suite + one result per rule (best-effort).
-                      om_try("/dataQuality/testSuites", {
+                      # A logical test suite + one test case and result per rule (best-effort).
+                      # OpenMetadata >= 1.4: test cases attach to the table's basic suite on
+                      # creation, are grouped into logical suites separately, and carry their
+                      # results as time series.
+                      suite = om_try("/dataQuality/testSuites", {
                           "name": "governance-quality-suite",
                           "description": "Standard + financial data-quality rule packs.",
                       }, "test suite")
+                      case_ids = []
                       for r in dq["results"]:
-                          om_try("/dataQuality/testCases", {
-                              "name": r["name"].replace(" ", "-").replace(".", "-").lower(),
+                          slug = re.sub(r"[^a-z0-9]+", "-", r["name"].lower()).strip("-")
+                          case = om_try("/dataQuality/testCases", {
+                              "name": slug,
                               "displayName": r["name"],
-                              "description": f"{r['kind']} rule",
+                              "description": f"{r['kind']} rule: {r['detail']}",
                               "entityLink": f"<#E::table::{ENT_TABLE_FQN}>",
                               "testDefinition": "tableRowCountToBeBetween",
-                              "testSuite": "governance-quality-suite",
+                              "parameterValues": [{"name": "minValue", "value": "1"},
+                                                  {"name": "maxValue", "value": "1000000000"}],
                           }, f"test case {r['name']}")
+                          if not case:
+                              continue
+                          case_ids.append(case["id"])
+                          try:
+                              om_request("POST", f"/dataQuality/testCases/testCaseResults/{case['fullyQualifiedName']}", {
+                                  "timestamp": ts,
+                                  "testCaseStatus": "Success" if r["status"] == "success" else "Failed",
+                                  "result": r["detail"],
+                              })
+                          except Exception as e:  # noqa: BLE001
+                              print(f"[warn] result {r['name']}: {e}")
+                      if suite and case_ids:
+                          om_try("/dataQuality/testCases/logicalTestCases",
+                                 {"testSuiteId": suite["id"], "testCaseIds": case_ids}, "suite membership")
                       # Raise an alert if anything failed (best-effort).
                       if dq["failed"]:
                           om_try("/events/subscriptions", {
