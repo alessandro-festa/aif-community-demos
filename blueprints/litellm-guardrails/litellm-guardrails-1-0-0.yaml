@@ -255,7 +255,7 @@ spec:
         pullPolicy: IfNotPresent
         registry: dp.apps.rancher.io
         repository: containers/open-webui
-        tag: 0.6.41-15.24
+        tag: 0.6.41-14.80  # 0.6.41-15.24 fails at start: No module named langchain.text_splitter
       global:
         tls:
           source: suse-private-ai
