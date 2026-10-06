@@ -795,6 +795,7 @@ spec:
                       "targets": [
                         {
                           "expr": "sum(node_total_hourly_cost)",
+                          "instant": true,
                           "refId": "A"
                         }
                       ]
@@ -821,6 +822,7 @@ spec:
                       "targets": [
                         {
                           "expr": "sum(node_total_hourly_cost) * 730",
+                          "instant": true,
                           "refId": "A"
                         }
                       ]
@@ -828,6 +830,7 @@ spec:
                     {
                       "type": "timeseries",
                       "title": "Node cost breakdown ($/hr)",
+                      "timeFrom": "6h",
                       "datasource": {
                         "type": "prometheus",
                         "uid": "prometheus"
@@ -882,6 +885,20 @@ spec:
             url: http://prometheus-server:80
         ui:
           enabled: true
+        # kind / bare-metal clusters have no cloud price list: without custom pricing
+        # OpenCost logs "No pricing found" and emits no node cost metrics, leaving the
+        # Infrastructure cost panels empty. OpenCost's on-prem default rates ($/hour).
+        customPricing:
+          enabled: true
+          provider: custom
+          costModel:
+            description: On-prem default pricing (OpenCost defaults)
+            CPU: "0.031611"
+            spotCPU: "0.006655"
+            RAM: "0.004237"
+            spotRAM: "0.000892"
+            GPU: "0.95"
+            storage: "0.00005479"
   # ----------------------------------------------------------------------------
   # Apache Airflow — orchestrates the FinOps simulation. DAGs embedded in this CR.
   #   finops_setup    → teams + virtual keys + budgets in LiteLLM
