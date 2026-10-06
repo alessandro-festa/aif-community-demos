@@ -149,6 +149,9 @@ spec:
         airflow-dags:
           useHelmHooks: false
           data: |
+            .airflowignore: |2
+              ..*
+
             build_marts.py: |2
               """
               DAG: build_marts
@@ -969,6 +972,8 @@ spec:
         configMap:
           name: airflow-dags
           items:
+          - key: .airflowignore
+            path: .airflowignore
           - key: build_marts.py
             path: build_marts.py
           - key: check_compliance_alerts.py

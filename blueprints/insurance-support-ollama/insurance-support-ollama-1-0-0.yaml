@@ -141,6 +141,9 @@ spec:
         airflow-dags:
           useHelmHooks: false
           data: |
+            .airflowignore: |2
+              ..*
+
             common.py: |2
               """
               Shared helpers for the Insurance Support Copilot DAGs.
@@ -813,6 +816,8 @@ spec:
         configMap:
           name: airflow-dags
           items:
+          - key: .airflowignore
+            path: .airflowignore
           - key: common.py
             path: common.py
           - key: customize_model.py

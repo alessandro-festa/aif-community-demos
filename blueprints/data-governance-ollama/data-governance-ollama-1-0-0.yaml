@@ -221,6 +221,9 @@ spec:
         airflow-dags:
           useHelmHooks: false
           data: |
+            .airflowignore: |2
+              ..*
+
             build_lineage.py: |2
               """
               DAG: build_lineage
@@ -942,6 +945,8 @@ spec:
         configMap:
           name: airflow-dags
           items:
+          - key: .airflowignore
+            path: .airflowignore
           - key: build_lineage.py
             path: build_lineage.py
           - key: common.py

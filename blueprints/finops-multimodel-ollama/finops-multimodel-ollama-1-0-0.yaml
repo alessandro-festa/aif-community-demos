@@ -913,6 +913,9 @@ spec:
         airflow-dags:
           useHelmHooks: false
           data: |
+            .airflowignore: |2
+              ..*
+
             backfill_history.py: |2
               """
               DAG: backfill_history
@@ -1477,6 +1480,8 @@ spec:
         configMap:
           name: airflow-dags
           items:
+          - key: .airflowignore
+            path: .airflowignore
           - key: backfill_history.py
             path: backfill_history.py
           - key: common.py

@@ -135,6 +135,9 @@ spec:
         airflow-dags:
           useHelmHooks: false
           data: |
+            .airflowignore: |2
+              ..*
+
             clear_qdrant.py: |2
               """
               DAG: clear_qdrant
@@ -611,6 +614,8 @@ spec:
         configMap:
           name: airflow-dags
           items:
+          - key: .airflowignore
+            path: .airflowignore
           - key: clear_qdrant.py
             path: clear_qdrant.py
           - key: common.py

@@ -146,6 +146,9 @@ spec:
         airflow-dags:
           useHelmHooks: false
           data: |
+            .airflowignore: |2
+              ..*
+
             clear_data.py: |2
               """
               DAG: clear_data
@@ -687,6 +690,8 @@ spec:
         configMap:
           name: airflow-dags
           items:
+          - key: .airflowignore
+            path: .airflowignore
           - key: clear_data.py
             path: clear_data.py
           - key: common.py
