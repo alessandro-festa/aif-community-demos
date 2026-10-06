@@ -45,3 +45,5 @@ spec:
       file: xray-copilot-ollama/xray-copilot-ollama-1-0-0.yaml
     - name: xray-copilot-vllm-1-0-0
       file: xray-copilot-vllm/xray-copilot-vllm-1-0-0.yaml
+    - name: secops-agent-factory-cpu-0-1-0
+      file: secops-agent-factory-cpu/secops-agent-factory-cpu-0-1-0.yaml

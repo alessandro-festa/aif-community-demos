@@ -23,11 +23,11 @@ metadata:
 # consumption), and BACKFILLS synthetic history straight into Prometheus via the
 # remote-write receiver so the dashboards show trends immediately.
 #
-# Chat happens in a small custom local UI (the marketplace's localFrontend) wired
+# Chat happens in a small custom local UI (run locally from ui/, see README) wired
 # straight to LiteLLM /v1 — Open WebUI is intentionally NOT used here.
 #
 # Components (registry sources):
-#   * ollama          — application-collection, CPU, 3 models (different sizes/prices)
+#   * ollama          — application-collection, CPU, 2 models (different sizes/prices)
 #   * litellm         — suse-ai-registry image (arm64: upstream ghcr multi-arch);
 #                       Presidio (mcr.microsoft.com) + the LiteLLM Prometheus
 #                       exporter (docker.io/nicholascecere/exporter-litellm) ride
@@ -38,11 +38,10 @@ metadata:
 #                       dashboard provisioned inline.
 #   * opencost        — application-collection; infra $ → Prometheus, queried back
 #                       via the in-namespace Prometheus service.
-#   * apache-airflow  — application-collection; DAGs via git-sync, custom image.
+#   * apache-airflow  — application-collection; DAGs embedded in this CR, custom image.
 #
-# The Blueprint Marketplace shows the reused guardrail import WIZARD (see
-# marketplace.yaml): the selected guardrails are injected into the litellm
-# component's proxy_config before this CR is applied.
+# Guardrails live in the litellm component's proxy_config (Presidio PII masking
+# on by default); edit `guardrails` there before applying this CR (README ## Guardrails).
 #
 # ⚠ Demo only, unsupported. Master keys / DB passwords below are placeholders.
 spec:
@@ -50,7 +49,7 @@ spec:
   displayName: FinOps Multi-Model Gateway (Ollama, CPU)
   version: 1.0.0
   description: |
-    FinOps for a guarded, multi-model LLM gateway. A LiteLLM proxy serves three
+    FinOps for a guarded, multi-model LLM gateway. A LiteLLM proxy serves two
     Ollama models at different per-token prices; guardrails (Presidio PII, secret
     redaction, prompt-injection) are enforced before the model. Two cost planes are
     reconciled in Grafana: TOKEN spend (LiteLLM OSS spend logs → a Prometheus
@@ -69,29 +68,29 @@ spec:
       * A default StorageClass (Ollama, Postgres, Prometheus, Grafana use PVCs).
       * cert-manager.
 
-    Import via the Blueprint Marketplace (choose guardrails in the wizard), create
-    an AIWorkload from this Blueprint in the AI Factory UI, then follow the guide:
-    run the Airflow DAGs (setup → traffic → backfill), open the Grafana FinOps
-    dashboards, and chat in the local UI to watch spend accrue live.
+    Edit the guardrails in the litellm proxy_config if needed (see the README),
+    kubectl apply this CR, create an AIWorkload from this Blueprint in the AI
+    Factory UI, then run the Airflow DAGs (setup → backfill → traffic), open the
+    Grafana FinOps dashboards, and chat in the local UI to watch spend accrue live.
   components:
   # ----------------------------------------------------------------------------
-  # Ollama — three CPU models at different sizes so the FinOps story has price
+  # Ollama — two CPU models at different sizes so the FinOps story has price
   # variety. Reachable at http://ollama:11434.
   # ----------------------------------------------------------------------------
   - chartName: ollama
     chartRepo: application-collection
-    chartVersion: 1.55.0
+    chartVersion: 1.76.0
     values:
       fullnameOverride: ollama
       image:
         pullPolicy: IfNotPresent
         registry: dp.apps.rancher.io
         repository: containers/ollama
-        tag: 0.21.2-11.48
+        tag: 0.32.14-11.95
       # Memory is tight on CPU: keep exactly ONE model resident and never unload it,
-      # so the chat model (qwen2.5:0.5b, warmed at startup via ollama.models.run) stays
-      # hot and the node doesn't try to hold all three at once. generate_traffic still
-      # works — Ollama swaps models in on demand when that DAG hits the larger ones.
+      # so the chat model (granite4:350m-h, warmed at startup via ollama.models.run) stays
+      # hot and the node doesn't try to hold both at once. generate_traffic still
+      # works — Ollama swaps models in on demand when that DAG hits the larger one.
       extraEnv:
         - {name: OLLAMA_KEEP_ALIVE, value: "-1"}
         - {name: OLLAMA_MAX_LOADED_MODELS, value: "1"}
@@ -100,14 +99,14 @@ spec:
           enabled: false
           draEnabled: false
         models:
-          # Pull all three (0.5B/0.8B/1B — max CPU speed); run only the smallest to
-          # warm it (the others load on demand when LiteLLM routes to them).
+          # Pull both (0.5B/1.5B — max CPU speed, the same models the other CPU
+          # blueprints use, so an air-gap registry stores them once); run only the
+          # smallest to warm it (the 1.5B loads on demand when LiteLLM routes to it).
           pull:
-          - qwen2.5:0.5b
-          - qwen3.5:0.8b
-          - llama3.2:1b
+          - granite4:350m-h
+          - granite4:1b-h
           run:
-          - qwen2.5:0.5b
+          - granite4:350m-h
         port: 11434
       persistentVolume:
         enabled: true
@@ -123,18 +122,18 @@ spec:
         type: ClusterIP
   # ----------------------------------------------------------------------------
   # LiteLLM — the guarded, multi-model OpenAI-compatible gateway.
-  #   * model_list carries THREE models, each with input/output cost-per-token so
+  #   * model_list carries TWO models, each with input/output cost-per-token so
   #     local models produce real $ in the spend logs (differentiated by size).
   #   * store_model_in_db: true so per-team VIRTUAL KEYS + budgets work (created by
   #     the Airflow finops_setup DAG).
-  #   * guardrails: [] baseline — the marketplace wizard appends the selection.
+  #   * guardrails: Presidio PII masking on by default (see README for more).
   #   * extraResources: Presidio analyzer/anonymizer + the LiteLLM Prometheus
   #     exporter (reads this component's Postgres, exposes spend/token metrics).
   # Reachable at http://litellm:4000.
   # ----------------------------------------------------------------------------
   - chartName: litellm
     chartRepo: suse-ai-registry
-    chartVersion: 1.81.13
+    chartVersion: 1.92.0
     values:
       fullnameOverride: litellm
       # NOTE: SUSE AI litellm-database image is amd64-only. The upstream ghcr image
@@ -175,29 +174,29 @@ spec:
           store_model_in_db: true
         litellm_settings:
           drop_params: true
-        # Three models at DIFFERENT prices (USD per token). These make the FinOps
-        # dashboards interesting: the same tokens cost 8x more on the 1B than the 0.5B.
+        # Two models at DIFFERENT prices (USD per token). These make the FinOps
+        # dashboards interesting: the same tokens cost 8x more on the 1.5B than the 0.5B.
         model_list:
-        - model_name: qwen-2.5-0.5b
+        - model_name: granite-4-350m
           litellm_params:
-            model: ollama_chat/qwen2.5:0.5b
+            model: ollama_chat/granite4:350m-h
             api_base: http://ollama:11434
             input_cost_per_token: 0.0000001    # $0.10 / 1M input tokens
             output_cost_per_token: 0.0000002   # $0.20 / 1M output tokens
-        - model_name: qwen-3.5-0.8b
+        - model_name: granite-4-1b
           litellm_params:
-            model: ollama_chat/qwen3.5:0.8b
-            api_base: http://ollama:11434
-            input_cost_per_token: 0.0000003    # $0.30 / 1M
-            output_cost_per_token: 0.0000006   # $0.60 / 1M
-        - model_name: llama-3.2-1b
-          litellm_params:
-            model: ollama_chat/llama3.2:1b
+            model: ollama_chat/granite4:1b-h
             api_base: http://ollama:11434
             input_cost_per_token: 0.0000008    # $0.80 / 1M
             output_cost_per_token: 0.0000016   # $1.60 / 1M
-        # Baseline: no guardrails. The marketplace wizard appends entries here.
-        guardrails: []
+        guardrails:
+        # Default: PII masking. Other options (PII blocking, hide-secrets,
+        # prompt-injection) are listed in this version's README.
+        - guardrail_name: presidio-pii-mask
+          litellm_params:
+            guardrail: presidio
+            mode: pre_call
+            default_on: true
       extraResources:
       # --- Presidio PII engine (public Microsoft images; no SUSE equivalent) ---
       - apiVersion: apps/v1
@@ -318,7 +317,7 @@ spec:
   # ----------------------------------------------------------------------------
   - chartName: prometheus
     chartRepo: application-collection
-    chartVersion: 29.13.1
+    chartVersion: 29.33.0
     values:
       global:
         imagePullSecrets: [application-collection]
@@ -368,7 +367,7 @@ spec:
   # ----------------------------------------------------------------------------
   - chartName: grafana
     chartRepo: application-collection
-    chartVersion: 12.7.2
+    chartVersion: 13.2.6
     values:
       global:
         imagePullSecrets: [application-collection]
@@ -868,7 +867,7 @@ spec:
   # ----------------------------------------------------------------------------
   - chartName: opencost
     chartRepo: application-collection
-    chartVersion: 2.5.27
+    chartVersion: 2.5.32
     values:
       global:
         imagePullSecrets: [application-collection]
@@ -884,7 +883,7 @@ spec:
         ui:
           enabled: true
   # ----------------------------------------------------------------------------
-  # Apache Airflow — orchestrates the FinOps simulation. DAGs via git-sync.
+  # Apache Airflow — orchestrates the FinOps simulation. DAGs embedded in this CR.
   #   finops_setup    → teams + virtual keys + budgets in LiteLLM
   #   generate_traffic→ synthetic multi-model / multi-team chat (real token spend)
   #   backfill_history→ backdated synthetic spend into Prometheus (remote-write)
@@ -894,7 +893,7 @@ spec:
   # ----------------------------------------------------------------------------
   - chartName: apache-airflow
     chartRepo: application-collection
-    chartVersion: 1.22.0
+    chartVersion: 1.22.2
     values:
       executor: LocalExecutor
       # Pin generated secrets so the pod template is STABLE across Fleet reconciles
@@ -906,16 +905,596 @@ spec:
         enabled: false
       flower:
         enabled: false
+      # --- BEGIN embedded DAGs (tools/embed-dags.py, source: ./dags; do not edit here) ---
       dags:
         gitSync:
-          enabled: true
-          repo: https://github.com/alessandro-festa/aif-community-demos.git
-          branch: main
-          ref: main
-          rev: HEAD
-          depth: 1
-          subPath: assets/finops-multimodel-ollama/dags
-          period: 30s
+          enabled: false
+      extraConfigMaps:
+        airflow-dags:
+          useHelmHooks: false
+          data: |
+            .airflowignore: |2
+              ..*
+
+            backfill_history.py: |2
+              """
+              DAG: backfill_history
+
+              Seed the FinOps dashboards with instant HISTORY by writing BACKDATED synthetic
+              samples straight into Prometheus via its remote-write receiver. Without this you'd
+              have to wait days of live traffic before the trend panels showed anything.
+
+              For each of the past BACKFILL_DAYS days it synthesises a plausible daily spend per
+              team × model (weekday/weekend variation, team + model weights, real per-token
+              prices from common.MODELS) and writes it at that day's midnight-UTC timestamp:
+
+                finops_daily_spend_usd{team_alias, model, use_case}   (USD spent that day)
+                finops_daily_tokens_total{model}                      (tokens that day)
+                finops_team_budget_usd{team_alias}                    (per-team monthly budget)
+
+              The Grafana "Historical spend (backfilled)" panels read these. Live panels read the
+              LiteLLM exporter metrics instead, so backfilled history and live spend never mix.
+
+              Requires the prometheus component's remote-write receiver + out-of-order window
+              (both set in the Blueprint CR: web.enable-remote-write-receiver + out_of_order_time_window: 30d).
+              """
+              from __future__ import annotations
+
+              import random
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import BACKFILL_DAYS, MODELS, TEAMS, remote_write
+
+              # Baseline chat requests per day across all teams (before weights/variation).
+              BASE_REQUESTS_PER_DAY = 140
+              # Rough tokens per request (prompt + completion) and the input/output split.
+              AVG_TOKENS_PER_REQUEST = 420
+              INPUT_FRACTION = 0.6
+
+
+              @dag(
+                  dag_id="backfill_history",
+                  schedule=None,
+                  start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                  catchup=False,
+                  tags=["finops", "backfill"],
+              )
+              def backfill_history():
+                  @task
+                  def write_history() -> dict:
+                      now = pendulum.now("UTC").start_of("day")
+                      samples: list[dict] = []
+                      grand_total = 0.0
+
+                      for day in range(BACKFILL_DAYS, 0, -1):
+                          d = now.subtract(days=day)
+                          ts_ms = int(d.timestamp() * 1000)
+                          # Weekends are quieter; weekdays busy, with a little noise.
+                          iso = d.isoweekday()     # 1=Mon … 7=Sun
+                          day_factor = (0.35 if iso >= 6 else 1.0) * random.uniform(0.8, 1.2)
+                          day_tokens: dict[str, float] = {}
+
+                          for team_alias, _key, budget, use_case, tw in TEAMS:
+                              # Per-team monthly budget as a metric so Grafana can compute budget
+                              # utilization (spend / budget). Written at every backfilled day so it
+                              # spans the window and max_over_time() finds it regardless of the
+                              # instant-query staleness window.
+                              samples.append({
+                                  "metric": {"__name__": "finops_team_budget_usd", "team_alias": team_alias},
+                                  "value": float(budget),
+                                  "timestamp": ts_ms,
+                              })
+                              team_reqs = BASE_REQUESTS_PER_DAY * tw * day_factor
+                              for model_name, in_price_1k, out_price_1k, mw in MODELS:
+                                  reqs = team_reqs * mw
+                                  tokens = reqs * AVG_TOKENS_PER_REQUEST * random.uniform(0.85, 1.15)
+                                  in_tok = tokens * INPUT_FRACTION
+                                  out_tok = tokens * (1 - INPUT_FRACTION)
+                                  spend = (in_tok / 1000 * in_price_1k) + (out_tok / 1000 * out_price_1k)
+                                  grand_total += spend
+                                  day_tokens[model_name] = day_tokens.get(model_name, 0.0) + tokens
+                                  samples.append({
+                                      "metric": {
+                                          "__name__": "finops_daily_spend_usd",
+                                          "team_alias": team_alias,
+                                          "model": model_name,
+                                          "use_case": use_case,
+                                      },
+                                      "value": round(spend, 6),
+                                      "timestamp": ts_ms,
+                                  })
+
+                          for model_name, tokens in day_tokens.items():
+                              samples.append({
+                                  "metric": {"__name__": "finops_daily_tokens_total", "model": model_name},
+                                  "value": round(tokens, 1),
+                                  "timestamp": ts_ms,
+                              })
+
+                      remote_write(samples)
+                      return {
+                          "days": BACKFILL_DAYS,
+                          "samples_written": len(samples),
+                          "synthetic_total_spend_usd": round(grand_total, 2),
+                      }
+
+                  write_history()
+
+
+              backfill_history()
+            common.py: |2
+              """
+              Shared helpers for the FinOps multi-model DAGs.
+
+              The DAGs drive the FinOps simulation against the LiteLLM gateway:
+                * finops_setup     — create per-team virtual keys + budgets in LiteLLM.
+                * generate_traffic — fire synthetic multi-model / multi-team chat (real token spend).
+                * backfill_history — write BACKDATED synthetic spend into Prometheus (remote-write).
+
+              Config (env, injected by the apache-airflow component):
+                LITELLM_BASE_URL       http://litellm:4000
+                LITELLM_MASTER_KEY     sk-guardrails-demo   (proxy master key; admin on the API)
+                PROM_REMOTE_WRITE_URL  http://prometheus-server:80/api/v1/write
+                TRAFFIC_REQUESTS       40                   (requests per generate_traffic run)
+                BACKFILL_DAYS          14                   (days of history for backfill_history)
+
+              The DAGs use only `requests` (already present in the Airflow image) plus the Python
+              standard library — the Prometheus remote-write client below is implemented from
+              scratch (protobuf + snappy), so NO custom Airflow image and NO extra pip deps are
+              needed. The stock application-collection apache-airflow image works as-is.
+              """
+              from __future__ import annotations
+
+              import os
+              import struct
+              import time
+
+              import requests
+
+              LITELLM_BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://litellm:4000").rstrip("/")
+              LITELLM_MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "sk-guardrails-demo")
+              PROM_REMOTE_WRITE_URL = os.environ.get(
+                  "PROM_REMOTE_WRITE_URL", "http://prometheus-server:80/api/v1/write"
+              )
+              TRAFFIC_REQUESTS = int(os.environ.get("TRAFFIC_REQUESTS", "40"))
+              BACKFILL_DAYS = int(os.environ.get("BACKFILL_DAYS", "14"))
+              HTTP_TIMEOUT = 120
+
+              # The two models served by LiteLLM (must match the model_name entries in the
+              # proxy_config model_list) and their per-1k-token prices (USD). Kept here so the
+              # traffic + backfill DAGs agree on model mix and pricing.
+              MODELS = [
+                  # model_name,       input_$/1k, output_$/1k, popularity weight
+                  ("granite-4-350m",   0.0001,     0.0002,      0.70),
+                  ("granite-4-1b",   0.0008,     0.0016,      0.30),
+              ]
+
+              # Per-team virtual keys (fixed key values → deterministic, no state to pass between
+              # DAGs) and their monthly budgets (USD). use_case is attached as a request tag for
+              # chargeback attribution.
+              TEAMS = [
+                  # team_alias,    virtual key,          monthly budget $, use_case,      traffic weight
+                  ("engineering",  "sk-team-eng",        50.0,             "code-assist", 0.40),
+                  ("data-science", "sk-team-ds",         80.0,             "analysis",    0.25),
+                  ("marketing",    "sk-team-mkt",        30.0,             "copywriting", 0.20),
+                  ("support",      "sk-team-support",    20.0,             "helpdesk",    0.15),
+              ]
+
+
+              # --------------------------------------------------------------------------- #
+              # LiteLLM admin API (uses the master key)
+              # --------------------------------------------------------------------------- #
+              def _admin_headers() -> dict:
+                  return {
+                      "Authorization": f"Bearer {LITELLM_MASTER_KEY}",
+                      "Content-Type": "application/json",
+                  }
+
+
+              def litellm_post(path: str, body: dict, ok_conflict: bool = False) -> dict:
+                  """POST to the LiteLLM admin API. When ok_conflict, swallow 400/409 (already
+                  exists) so setup DAGs are idempotent. On other errors, raise WITH the response
+                  body so LiteLLM's actual message (e.g. 'admin only route', 'DB not connected')
+                  shows up in the Airflow logs instead of a bare HTTPError."""
+                  r = requests.post(
+                      f"{LITELLM_BASE_URL}{path}", json=body, headers=_admin_headers(), timeout=HTTP_TIMEOUT
+                  )
+                  if ok_conflict and r.status_code in (400, 409):
+                      return {"status": "exists", "detail": r.text[:300]}
+                  if not r.ok:
+                      raise RuntimeError(f"LiteLLM POST {path} -> HTTP {r.status_code}: {r.text[:600]}")
+                  return r.json() if r.content else {}
+
+
+              def wait_for_litellm(retries: int = 30, delay: int = 10) -> None:
+                  """Block until the proxy answers /health/liveliness (models may still warm)."""
+                  last = None
+                  for _ in range(retries):
+                      try:
+                          r = requests.get(f"{LITELLM_BASE_URL}/health/liveliness", timeout=10)
+                          if r.ok:
+                              return
+                          last = r.status_code
+                      except Exception as e:  # noqa: BLE001
+                          last = e
+                      time.sleep(delay)
+                  raise RuntimeError(f"LiteLLM not ready at {LITELLM_BASE_URL} (last={last})")
+
+
+              # --------------------------------------------------------------------------- #
+              # Prometheus remote-write (backdated samples for instant history)
+              #
+              # Implemented from scratch so the DAGs need no extra pip deps (the stock Airflow
+              # image has no pip). Remote-write is a snappy-compressed protobuf WriteRequest:
+              #   WriteRequest { repeated TimeSeries timeseries = 1; }
+              #   TimeSeries   { repeated Label labels = 1; repeated Sample samples = 2; }
+              #   Label        { string name = 1; string value = 2; }
+              #   Sample       { double value = 1; int64 timestamp = 2; }
+              # We encode the protobuf by hand and wrap it in a snappy BLOCK made entirely of
+              # literals (a valid, if uncompressed, snappy block) — no snappy C library needed.
+              # --------------------------------------------------------------------------- #
+              def _varint(n: int) -> bytes:
+                  out = bytearray()
+                  while True:
+                      b = n & 0x7F
+                      n >>= 7
+                      out.append(b | (0x80 if n else 0))
+                      if not n:
+                          return bytes(out)
+
+
+              def _ld(field: int, data: bytes) -> bytes:
+                  """Length-delimited field (wire type 2): tag + varint(len) + data."""
+                  return _varint((field << 3) | 2) + _varint(len(data)) + data
+
+
+              def _encode_write_request(samples: list[dict]) -> bytes:
+                  body = bytearray()
+                  for s in samples:
+                      labels = bytearray()
+                      for name, value in s["metric"].items():
+                          lbl = _ld(1, str(name).encode()) + _ld(2, str(value).encode())
+                          labels += _ld(1, lbl)  # TimeSeries.labels
+                      # Sample: value (field 1, 64-bit double) + timestamp (field 2, varint).
+                      sample = (_varint((1 << 3) | 1) + struct.pack("<d", float(s["value"]))
+                                + _varint((2 << 3) | 0) + _varint(int(s["timestamp"])))
+                      ts = bytes(labels) + _ld(2, sample)  # TimeSeries.samples
+                      body += _ld(1, ts)  # WriteRequest.timeseries
+                  return bytes(body)
+
+
+              def _snappy_block(data: bytes) -> bytes:
+                  """Minimal snappy block: preamble length + literal runs only (<=60 bytes each)."""
+                  out = bytearray(_varint(len(data)))
+                  for i in range(0, len(data), 60):
+                      chunk = data[i:i + 60]
+                      out.append((len(chunk) - 1) << 2)  # literal tag, length-1 in the top 6 bits
+                      out += chunk
+                  return bytes(out)
+
+
+              def remote_write(samples: list[dict]) -> None:
+                  """Push samples to Prometheus via the remote-write receiver.
+
+                  Each sample: {"metric": {"__name__": ..., <labels>}, "value": float, "timestamp": ms}.
+                  """
+                  if not samples:
+                      return
+                  batch = 500
+                  for i in range(0, len(samples), batch):
+                      payload = _snappy_block(_encode_write_request(samples[i:i + batch]))
+                      r = requests.post(
+                          PROM_REMOTE_WRITE_URL,
+                          data=payload,
+                          headers={
+                              "Content-Encoding": "snappy",
+                              "Content-Type": "application/x-protobuf",
+                              "X-Prometheus-Remote-Write-Version": "0.1.0",
+                          },
+                          timeout=HTTP_TIMEOUT,
+                      )
+                      r.raise_for_status()
+            finops_setup.py: |2
+              """
+              DAG: finops_setup
+
+              Create the per-team **virtual keys** and **budgets** in LiteLLM that make the
+              chargeback / budget FinOps use cases work. For each team it creates (or reuses) a
+              team with a monthly budget, then generates a virtual key scoped to that team.
+
+              LiteLLM's /key/generate RETURNS a generated key value (you can't supply your own —
+              that returns 403). The key values are therefore captured here and stored in the
+              Airflow Variable `finops_team_keys` (JSON: {team_alias: {key, team_id, budget,
+              use_case}}) so the generate_traffic DAG can use them. The local chat UI doesn't need
+              them — it uses the master key plus a team tag for attribution.
+
+              Requires the litellm component's `store_model_in_db: true` (set in the Blueprint CR).
+              Run this before generate_traffic.
+              """
+              from __future__ import annotations
+
+              import json
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import (
+                  LITELLM_BASE_URL,
+                  TEAMS,
+                  litellm_post,
+                  wait_for_litellm,
+                  _admin_headers,  # noqa: PLC2701 - internal helper reuse within the DAG package
+              )
+
+              try:  # Airflow 3 task SDK, with a fallback for older imports.
+                  from airflow.sdk import Variable
+              except ImportError:  # pragma: no cover
+                  from airflow.models import Variable
+
+              TEAM_KEYS_VAR = "finops_team_keys"
+
+
+              @dag(
+                  dag_id="finops_setup",
+                  schedule=None,
+                  start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                  catchup=False,
+                  tags=["finops", "setup"],
+              )
+              def finops_setup():
+                  @task
+                  def wait() -> None:
+                      wait_for_litellm()
+
+                  @task
+                  def create_teams_and_keys() -> dict:
+                      import requests
+
+                      def team_id_by_alias(alias: str) -> str | None:
+                          r = requests.get(
+                              f"{LITELLM_BASE_URL}/team/list", headers=_admin_headers(), timeout=60
+                          )
+                          if not r.ok:
+                              return None
+                          for t in r.json() or []:
+                              info = t.get("team_info", t) if isinstance(t, dict) else {}
+                              if (t.get("team_alias") or info.get("team_alias")) == alias:
+                                  return t.get("team_id") or info.get("team_id")
+                          return None
+
+                      mapping: dict[str, dict] = {}
+                      # Unique-ish suffix so key_alias never collides on re-runs (a fresh key each run).
+                      stamp = pendulum.now("UTC").int_timestamp
+                      for team_alias, _legacy_key, budget, use_case, _weight in TEAMS:
+                          # Team (reuse if it already exists), with a monthly budget for chargeback.
+                          team_id = team_id_by_alias(team_alias)
+                          if not team_id:
+                              resp = litellm_post(
+                                  "/team/new",
+                                  {"team_alias": team_alias, "max_budget": budget, "budget_duration": "30d"},
+                                  ok_conflict=True,
+                              )
+                              team_id = resp.get("team_id") or team_id_by_alias(team_alias)
+
+                          # Virtual key scoped to the team. LiteLLM generates + returns the value.
+                          keyresp = litellm_post(
+                              "/key/generate",
+                              {
+                                  "key_alias": f"{team_alias}-key-{stamp}",
+                                  "team_id": team_id,
+                                  "max_budget": budget,
+                                  "budget_duration": "30d",
+                                  "metadata": {"team": team_alias, "use_case": use_case},
+                              },
+                          )
+                          mapping[team_alias] = {
+                              "key": keyresp.get("key"),
+                              "team_id": team_id,
+                              "budget": budget,
+                              "use_case": use_case,
+                          }
+
+                      # Persist for generate_traffic (contains secrets — Variable, not returned/logged).
+                      Variable.set(TEAM_KEYS_VAR, json.dumps(mapping))
+                      # Return a redacted summary for the task log.
+                      return {t: {"team_id": v["team_id"], "budget": v["budget"], "has_key": bool(v["key"])}
+                              for t, v in mapping.items()}
+
+                  wait() >> create_teams_and_keys()
+
+
+              finops_setup()
+            generate_traffic.py: |2
+              """
+              DAG: generate_traffic
+
+              Fire synthetic chat traffic at the LiteLLM gateway so the FinOps signals populate
+              with REAL token consumption. Each request:
+                * uses a per-team virtual key (weighted by common.TEAMS) — spend is attributed to
+                  that team / key;
+                * targets one of the two models (weighted by common.MODELS) — different prices;
+                * carries a chargeback tag (team + use_case) via the x-litellm-tags header;
+                * varies prompt length so token counts (and cost) vary.
+
+              LiteLLM writes each call to its spend logs; the litellm-exporter turns those into
+              Prometheus metrics, which Grafana visualises. Some requests may be blocked by the
+              guardrails (PII / prompt-injection) or rejected once a team's budget is exhausted —
+              both are expected and counted.
+
+              Run finops_setup first (it creates the virtual keys this DAG uses).
+              Set TRAFFIC_REQUESTS to change the volume; schedule the DAG to build an ongoing trend.
+              """
+              from __future__ import annotations
+
+              import json
+              import random
+
+              import pendulum
+              import requests
+              from airflow.decorators import dag, task
+
+              from common import (
+                  LITELLM_BASE_URL,
+                  LITELLM_MASTER_KEY,
+                  MODELS,
+                  TEAMS,
+                  TRAFFIC_REQUESTS,
+                  HTTP_TIMEOUT,
+                  wait_for_litellm,
+              )
+
+              try:  # Airflow 3 task SDK, with a fallback for older imports.
+                  from airflow.sdk import Variable
+              except ImportError:  # pragma: no cover
+                  from airflow.models import Variable
+
+              TEAM_KEYS_VAR = "finops_team_keys"
+
+              # Prompt pools keyed by use_case, plus a few long prompts to create token variety.
+              PROMPTS = {
+                  "code-assist": [
+                      "Write a Python function that reverses a linked list.",
+                      "Explain the difference between a process and a thread.",
+                      "Refactor this loop into a list comprehension: for x in items: out.append(x*2)",
+                  ],
+                  "analysis": [
+                      "Summarise the key drivers of customer churn in two sentences.",
+                      "What statistical test compares means of two independent groups?",
+                      "Explain p-values to a non-technical stakeholder.",
+                  ],
+                  "copywriting": [
+                      "Write a punchy one-line tagline for a cloud cost tool.",
+                      "Draft a 2-sentence product announcement for a new AI gateway.",
+                      "Give me three subject lines for a webinar invite.",
+                  ],
+                  "helpdesk": [
+                      "How do I reset my password?",
+                      "The dashboard is slow to load, what should I check first?",
+                      "Explain what a 502 error means to an end user.",
+                  ],
+              }
+              LONG_SUFFIX = (
+                  " Please answer thoroughly, step by step, with examples, trade-offs, and a short "
+                  "conclusion summarising the recommendation for a production environment."
+              )
+
+
+              def _weighted(items, weight_index):
+                  r = random.random() * sum(i[weight_index] for i in items)
+                  upto = 0.0
+                  for it in items:
+                      upto += it[weight_index]
+                      if upto >= r:
+                          return it
+                  return items[-1]
+
+
+              @dag(
+                  dag_id="generate_traffic",
+                  schedule=None,
+                  start_date=pendulum.datetime(2024, 1, 1, tz="UTC"),
+                  catchup=False,
+                  tags=["finops", "traffic"],
+              )
+              def generate_traffic():
+                  @task
+                  def wait() -> None:
+                      wait_for_litellm()
+
+                  @task
+                  def fire() -> dict:
+                      # Per-team virtual keys created by finops_setup. If missing, fall back to the
+                      # master key (spend still tagged, but not attributed to a team) and warn.
+                      team_keys = json.loads(Variable.get(TEAM_KEYS_VAR, default="{}"))
+                      used_fallback = not team_keys
+
+                      sent, blocked, errors = 0, 0, 0
+                      total_cost, total_tokens = 0.0, 0
+                      by_model: dict[str, int] = {}
+                      by_team: dict[str, float] = {}
+
+                      for _ in range(TRAFFIC_REQUESTS):
+                          team_alias, _legacy_key, _budget, use_case, _tw = _weighted(TEAMS, 4)
+                          entry = team_keys.get(team_alias) or {}
+                          key = entry.get("key") or LITELLM_MASTER_KEY
+                          model_name, _in, _out, _mw = _weighted(MODELS, 3)
+                          prompt = random.choice(PROMPTS[use_case])
+                          if random.random() < 0.35:  # ~1/3 are long (more tokens → more cost)
+                              prompt += LONG_SUFFIX
+
+                          try:
+                              r = requests.post(
+                                  f"{LITELLM_BASE_URL}/v1/chat/completions",
+                                  headers={
+                                      "Authorization": f"Bearer {key}",
+                                      "Content-Type": "application/json",
+                                      "x-litellm-tags": f"team:{team_alias},use_case:{use_case}",
+                                  },
+                                  json={
+                                      "model": model_name,
+                                      "messages": [{"role": "user", "content": prompt}],
+                                      "max_tokens": 256,
+                                      "temperature": 0.7,
+                                  },
+                                  timeout=HTTP_TIMEOUT,
+                              )
+                          except Exception:  # noqa: BLE001
+                              errors += 1
+                              continue
+
+                          if r.status_code == 200:
+                              sent += 1
+                              cost = float(r.headers.get("x-litellm-response-cost", 0) or 0)
+                              total_cost += cost
+                              by_team[team_alias] = by_team.get(team_alias, 0.0) + cost
+                              by_model[model_name] = by_model.get(model_name, 0) + 1
+                              usage = (r.json() or {}).get("usage", {})
+                              total_tokens += int(usage.get("total_tokens", 0) or 0)
+                          elif r.status_code in (400, 403):
+                              # Guardrail block or budget/permission rejection — expected.
+                              blocked += 1
+                          else:
+                              errors += 1
+
+                      return {
+                          "requests": TRAFFIC_REQUESTS,
+                          "sent": sent,
+                          "blocked": blocked,
+                          "errors": errors,
+                          "total_cost_usd": round(total_cost, 6),
+                          "total_tokens": total_tokens,
+                          "by_model": by_model,
+                          "by_team": {k: round(v, 6) for k, v in by_team.items()},
+                          "warning": ("no finops_team_keys Variable — ran on the master key; "
+                                      "run finops_setup for per-team attribution") if used_fallback else None,
+                      }
+
+                  wait() >> fire()
+
+
+              generate_traffic()
+      volumes:
+      - name: dags
+        configMap:
+          name: airflow-dags
+          items:
+          - key: .airflowignore
+            path: .airflowignore
+          - key: backfill_history.py
+            path: backfill_history.py
+          - key: common.py
+            path: common.py
+          - key: finops_setup.py
+            path: finops_setup.py
+          - key: generate_traffic.py
+            path: generate_traffic.py
+      volumeMounts:
+      - name: dags
+        mountPath: /opt/airflow/dags
+        readOnly: true
+      # --- END embedded DAGs ---
       env:
       - name: LITELLM_BASE_URL
         value: http://litellm:4000

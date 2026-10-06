@@ -8,36 +8,36 @@ metadata:
 # VisionGPT (Ollama) — LLM-assisted navigation hazard detection on CPU.
 # A SUSE derivation of AIS-Clemson/VisionGPT, reimagined as a vision-language
 # pipeline: a local demo UI samples frames from a walking video and sends each to
-# a vision-language model (Ollama, moondream:1.8b) over the OpenAI-compatible API,
+# a vision-language model (Ollama, minicpm-v4.6:1b) over the OpenAI-compatible API,
 # which returns a per-frame danger score + short reason. CPU-only, tuned for max
-# speed — moondream is a much smaller VLM than the visiongpt-vllm variant's
+# speed — minicpm-v4.6:1b is a much smaller VLM than the visiongpt-gpu variant's
 # Qwen2.5-VL (served via vLLM on GPU), traded for lower per-frame latency on CPU.
-# This CR deploys only Ollama; the UI runs locally via the Blueprint Marketplace.
+# This CR deploys only Ollama; the UI runs locally from `ui/`.
 spec:
   source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
   displayName: VisionGPT (Ollama, CPU)
   version: 1.0.0
   description: |
     LLM-assisted navigation hazard detection — a SUSE / vision-language derivation
-    of AIS-Clemson's VisionGPT. Ollama serves the moondream 1.8B vision-language
+    of AIS-Clemson's VisionGPT. Ollama serves the MiniCPM-V 4.6 (~1B) vision-language
     model on CPU (tuned for speed); a local SUSE-styled UI samples frames from a
     walking video (bundled sample or your upload) and asks the model, per frame,
     for a danger score (0/1) and a short reason, at a selectable sensitivity
     (low/normal/high).
 
-    Deploys only Ollama (CPU). The UI runs locally via the Blueprint Marketplace,
+    Deploys only Ollama (CPU). The UI runs locally from ui/ (see the README),
     reaching Ollama over kubectl port-forward. For a larger, GPU-served
     vision-language model (Qwen2.5-VL via vLLM), use the "VisionGPT (vLLM, GPU)"
     blueprint.
 
     Prerequisites: the SUSE AI Factory operator, the application-collection
     ClusterRepo (+ credentials secret), a default StorageClass. After importing,
-    create an AIWorkload from this Blueprint in the AI Factory UI, then launch the
-    local UI from the marketplace guide.
+    create an AIWorkload from this Blueprint in the AI Factory UI, then port-forward
+    Ollama and start the local UI as described in the README.
   components:
   - chartName: ollama
     chartRepo: application-collection
-    chartVersion: 1.55.0
+    chartVersion: 1.76.0
     values:
       # Pin the service name so the local UI's port-forward is stable.
       fullnameOverride: ollama
@@ -45,18 +45,18 @@ spec:
         pullPolicy: IfNotPresent
         registry: dp.apps.rancher.io
         repository: containers/ollama
-        tag: 0.21.2-11.48
+        tag: 0.32.14-11.95
       ollama:
         gpu:
           enabled: false
           draEnabled: false
         models:
-          # moondream:1.8b — a much smaller multimodal (vision+text) model than the
+          # minicpm-v4.6:1b — a much smaller multimodal (vision+text) model than the
           # vLLM variant's Qwen2.5-VL-3B-Instruct, traded for CPU speed.
           pull:
-          - moondream:1.8b
+          - minicpm-v4.6:1b
           run:
-          - moondream:1.8b
+          - minicpm-v4.6:1b
         port: 11434
       persistentVolume:
         enabled: true

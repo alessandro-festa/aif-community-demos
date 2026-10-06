@@ -50,17 +50,18 @@ spec:
     Prerequisites (install on the target cluster BEFORE creating an AIWorkload):
       * SUSE AI Factory operator (owns the Blueprint / AIWorkload CRDs).
       * The application-collection ClusterRepo + credentials secret.
-      * Two ADDITIONAL ClusterRepos for the upstream Apache-2.0 charts (see the
-        blueprint README, clusterrepos/):
+      * Two ADDITIONAL ClusterRepos for the upstream Apache-2.0 charts
+        (`kubectl apply -f clusterrepos/` next to this CR):
           - openmetadata → https://helm.open-metadata.org
-          - opensearch   → https://opensearch-project.github.io/helm-charts
+          - bitnami      → oci://registry-1.docker.io/bitnamicharts
       * A default StorageClass (PostgreSQL, OpenSearch, Ollama use PVCs) and cert-manager.
       * This is a LARGE workload (OpenSearch + OpenMetadata are JVM services): give it a
         well-resourced node.
 
     After importing, create an AIWorkload from this Blueprint in the AI Factory UI, run
-    the governance pipeline (seed → lineage → data quality → periodic review) from the
-    marketplace guide, open the OpenMetadata UI, then launch the copilot.
+    the governance DAGs in the Airflow UI in order (seed_governance → build_lineage →
+    data_quality → periodic_review), open the OpenMetadata UI, then run the copilot
+    locally from ui/ (see the README next to this CR).
   components:
   # ----------------------------------------------------------------------- #
   # PostgreSQL (upstream Bitnami chart, Apache-2.0) — OpenMetadata's backend DB
@@ -99,7 +100,7 @@ spec:
   # ----------------------------------------------------------------------- #
   - chartName: opensearch
     chartRepo: application-collection
-    chartVersion: 3.7.0
+    chartVersion: 3.8.0
     values:
       imagePullSecrets:
         - name: application-collection
@@ -134,6 +135,10 @@ spec:
     chartRepo: openmetadata
     chartVersion: 1.13.1
     values:
+      # The chart default docker.getcollate.io is a shared front for Docker Hub whose
+      # anonymous pull quota is routinely exhausted (429); same image, direct source.
+      image:
+        repository: docker.io/openmetadata/server
       openmetadata:
         config:
           # External PostgreSQL backend (Bitnami image includes pgcrypto). The chart's
@@ -186,11 +191,11 @@ spec:
   # ----------------------------------------------------------------------- #
   # Apache Airflow — STOCK Application Collection image (no custom build). DAGs seed
   # OpenMetadata via REST and compute data quality over PostgreSQL; they import only
-  # `requests` + `psycopg2` (both already in the image). DAGs delivered via git-sync.
+  # `requests` + `psycopg2` (both already in the image). DAGs embedded in this CR.
   # ----------------------------------------------------------------------- #
   - chartName: apache-airflow
     chartRepo: application-collection
-    chartVersion: 1.22.0
+    chartVersion: 1.22.2
     values:
       executor: LocalExecutor
       # Pin generated secret keys so the pod template is STABLE across Fleet reconciles
@@ -205,19 +210,758 @@ spec:
       images:
         airflow:
           repository: containers/apache-airflow
-          tag: 3.2.2-8.14
+          tag: 3.3.2-13.2
           pullPolicy: IfNotPresent
           registry: dp.apps.rancher.io
+      # --- BEGIN embedded DAGs (tools/embed-dags.py, source: ./dags; do not edit here) ---
       dags:
         gitSync:
-          enabled: true
-          repo: https://github.com/alessandro-festa/aif-community-demos.git
-          branch: main
-          ref: main
-          rev: HEAD
-          depth: 1
-          subPath: assets/data-governance-ollama/dags
-          period: 30s
+          enabled: false
+      extraConfigMaps:
+        airflow-dags:
+          useHelmHooks: false
+          data: |
+            .airflowignore: |2
+              ..*
+
+            build_lineage.py: |2
+              """
+              DAG: build_lineage
+
+              Add data LINEAGE between the catalogued tables (architecture-as-lineage) so OpenMetadata's
+              graph + Impact Analysis work, and map DATA RISK by tagging tables with a Risk level derived
+              from their regulation/sensitivity tags. Run after seed_governance.
+
+              Flow modelled:
+                gov_registry.business_registry ─▶ enterprise_dwh.core.customer ─▶ account ─▶ transaction
+              """
+              from __future__ import annotations
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import om_add_lineage, om_get, om_put, wait_for_openmetadata
+
+              ENT = "enterprise-postgres.enterprise_dwh.core"
+              REG = "govregistry-postgres.gov_registry.public"
+
+              # from_fqn -> to_fqn (data flows downstream left→right)
+              EDGES = [
+                  (f"{REG}.business_registry", f"{ENT}.customer"),
+                  (f"{ENT}.customer", f"{ENT}.account"),
+                  (f"{ENT}.account", f"{ENT}.transaction"),
+              ]
+
+              # Data-risk map: table FQN -> risk level (High where PII/confidential + upstream breadth).
+              RISK = {
+                  f"{ENT}.customer": "High",       # PII master
+                  f"{REG}.business_registry": "High",
+                  f"{ENT}.account": "Medium",      # confidential balances
+                  f"{ENT}.transaction": "Medium",
+              }
+
+
+              def _add_table_tag(fqn: str, tag_fqn: str) -> None:
+                  """GET the table then re-PUT (createOrUpdate) with the extra table-level tag added,
+                  preserving its columns. Best-effort."""
+                  t = om_get(f"/tables/name/{fqn}?fields=columns,tags")
+                  tags = [{"tagFQN": x["tagFQN"]} for x in (t.get("tags") or [])]
+                  if tag_fqn not in [x["tagFQN"] for x in tags]:
+                      tags.append({"tagFQN": tag_fqn})
+                  schema_fqn = fqn.rsplit(".", 1)[0]
+                  cols = []
+                  for c in (t.get("columns") or []):
+                      col = {"name": c["name"], "dataType": c.get("dataType", "UNKNOWN"),
+                             "tags": [{"tagFQN": x["tagFQN"]} for x in (c.get("tags") or [])]}
+                      if c.get("dataLength") is not None:   # required for varchar/char/binary
+                          col["dataLength"] = c["dataLength"]
+                      cols.append(col)
+                  om_put("/tables", {"name": fqn.rsplit(".", 1)[1], "databaseSchema": schema_fqn,
+                                     "columns": cols, "tags": tags})
+
+
+              @dag(dag_id="build_lineage", schedule=None,
+                   start_date=pendulum.datetime(2024, 1, 1, tz="UTC"), catchup=False,
+                   tags=["governance", "lineage"])
+              def build_lineage():
+
+                  @task
+                  def wait() -> None:
+                      wait_for_openmetadata()
+
+                  @task
+                  def add_edges() -> dict:
+                      for src, dst in EDGES:
+                          om_add_lineage("/tables", src, "/tables", dst)
+                      return {"edges": len(EDGES)}
+
+                  @task
+                  def map_risk() -> dict:
+                      # Risk classification + levels, then tag each table.
+                      om_put("/classifications", {"name": "Risk",
+                              "description": "Data-risk level derived from sensitivity + lineage breadth."})
+                      for level in ("High", "Medium", "Low"):
+                          om_put("/tags", {"classification": "Risk", "name": level,
+                                           "description": f"{level} data risk."})
+                      for fqn, level in RISK.items():
+                          try:
+                              _add_table_tag(fqn, f"Risk.{level}")
+                          except Exception as e:  # noqa: BLE001
+                              print(f"[warn] risk tag {fqn}: {e}")
+                      return {"tagged": len(RISK)}
+
+                  w = wait()
+                  w >> add_edges()
+                  w >> map_risk()
+
+
+              build_lineage()
+            common.py: |2
+              """
+              Shared helpers for the Data Governance Copilot DAGs.
+
+              The DAGs SEED and drive OpenMetadata (the Apache-2.0 governance platform) through its
+              REST API and compute data-quality results over PostgreSQL sample data. OpenMetadata then
+              provides the catalog, glossary, lineage + impact analysis, data-quality suites,
+              roles/policies and alerting; a local LLM copilot reads it back.
+
+              Design note: OpenMetadata's own ingestion Airflow is DISABLED
+              (pipelineServiceClientConfig.enabled=false) — this stock AppCo Airflow pushes metadata
+              directly via REST, so the DAGs need only `requests` + `psycopg2` (both already in the
+              image). No custom OpenMetadata image, no second Airflow.
+
+              Config (env, injected by the apache-airflow component):
+                OM_BASE_URL       http://openmetadata:8585
+                OM_USER           admin@open-metadata.org
+                OM_PASSWORD       admin
+                PGHOST / PGPORT   gov-db / 5432
+                PG_ADMIN_USER     postgres
+                PG_ADMIN_PASSWORD GovAdmin-Demo-1
+              """
+              from __future__ import annotations
+
+              import base64
+              import os
+
+              import psycopg2
+              import psycopg2.extras
+              import requests
+
+              OM_BASE_URL = os.environ.get("OM_BASE_URL", "http://openmetadata:8585").rstrip("/")
+              OM_USER = os.environ.get("OM_USER", "admin@open-metadata.org")
+              OM_PASSWORD = os.environ.get("OM_PASSWORD", "admin")
+
+              PGHOST = os.environ.get("PGHOST", "gov-db")
+              PGPORT = int(os.environ.get("PGPORT", "5432"))
+              PG_ADMIN_USER = os.environ.get("PG_ADMIN_USER", "postgres")
+              PG_ADMIN_PASSWORD = os.environ.get("PG_ADMIN_PASSWORD", "GovAdmin-Demo-1")
+
+              HTTP_TIMEOUT = 120
+
+              # The two sample data sources the DAGs create + catalog.
+              ENTERPRISE_DB = "enterprise_dwh"          # the "enterprise data warehouse"
+              REGISTRY_DB = "gov_registry"              # the "public administration" external DB
+
+              # The OpenMetadata database SERVICE names the catalog is organised under.
+              ENTERPRISE_SERVICE = "enterprise-postgres"
+              REGISTRY_SERVICE = "govregistry-postgres"
+
+
+              # --------------------------------------------------------------------------- #
+              # OpenMetadata REST client (basic-auth login -> JWT, then Bearer on /api/v1)
+              # --------------------------------------------------------------------------- #
+              _om_token: dict = {"value": None}
+
+
+              def _om_login() -> str:
+                  if _om_token["value"]:
+                      return _om_token["value"]
+                  # OpenMetadata basic auth: password is base64-encoded in the login payload.
+                  pw = base64.b64encode(OM_PASSWORD.encode()).decode()
+                  r = requests.post(
+                      f"{OM_BASE_URL}/api/v1/users/login",
+                      json={"email": OM_USER, "password": pw},
+                      timeout=HTTP_TIMEOUT,
+                  )
+                  r.raise_for_status()
+                  tok = (r.json() or {}).get("accessToken", "")
+                  if not tok:
+                      raise RuntimeError(f"OpenMetadata login returned no accessToken: {r.text[:300]}")
+                  _om_token["value"] = tok
+                  return tok
+
+
+              def om_request(method: str, path: str, body: dict | None = None,
+                             ok_status: tuple = (200, 201)) -> dict:
+                  """Call the OpenMetadata API, refreshing the JWT once on 401. Raises with the
+                  response body on error so the real OM message shows up in the Airflow logs."""
+                  def _call():
+                      headers = {"Authorization": f"Bearer {_om_login()}",
+                                 "Content-Type": "application/json"}
+                      return requests.request(method, f"{OM_BASE_URL}/api/v1{path}",
+                                              headers=headers, json=body, timeout=HTTP_TIMEOUT)
+                  r = _call()
+                  if r.status_code == 401:  # token expired — refresh once
+                      _om_token["value"] = None
+                      r = _call()
+                  if r.status_code not in ok_status:
+                      raise RuntimeError(f"OM {method} {path} -> HTTP {r.status_code}: {r.text[:600]}")
+                  return r.json() if r.content else {}
+
+
+              def om_put(path: str, body: dict) -> dict:
+                  """createOrUpdate (idempotent) — OpenMetadata PUT upserts by fully-qualified name."""
+                  return om_request("PUT", path, body)
+
+
+              def om_get(path: str) -> dict:
+                  return om_request("GET", path, ok_status=(200,))
+
+
+              def om_try(path: str, body: dict, what: str) -> dict | None:
+                  """Best-effort PUT that logs and swallows errors — used for version-sensitive
+                  endpoints (data quality / alerts) so the pipeline still completes on older/newer OM."""
+                  try:
+                      return om_put(path, body)
+                  except Exception as e:  # noqa: BLE001
+                      print(f"[warn] {what}: {e}")
+                      return None
+
+
+              def om_entity_ref(path: str, fqn: str) -> dict:
+                  """Return an {id, type} entity reference for use in lineage edges, resolving the id
+                  from the fully-qualified name. `path` e.g. '/tables', type inferred from it."""
+                  ent = om_get(f"{path}/name/{fqn}")
+                  etype = path.strip("/").rstrip("s")  # /tables -> table
+                  return {"id": ent["id"], "type": etype}
+
+
+              def om_add_lineage(from_path: str, from_fqn: str, to_path: str, to_fqn: str) -> None:
+                  om_put("/lineage", {"edge": {
+                      "fromEntity": om_entity_ref(from_path, from_fqn),
+                      "toEntity": om_entity_ref(to_path, to_fqn),
+                  }})
+
+
+              # --------------------------------------------------------------------------- #
+              # PostgreSQL (superuser) — create + seed the sample source databases
+              # --------------------------------------------------------------------------- #
+              def pg_admin_conn(dbname: str = "postgres"):
+                  return psycopg2.connect(host=PGHOST, port=PGPORT, user=PG_ADMIN_USER,
+                                          password=PG_ADMIN_PASSWORD, dbname=dbname)
+
+
+              def pg_ensure_database(name: str) -> None:
+                  """CREATE DATABASE <name> if it doesn't already exist (autocommit)."""
+                  conn = pg_admin_conn()
+                  conn.autocommit = True
+                  try:
+                      with conn.cursor() as cur:
+                          cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,))
+                          if not cur.fetchone():
+                              cur.execute(f'CREATE DATABASE "{name}"')
+                  finally:
+                      conn.close()
+
+
+              def pg_exec(dbname: str, sql: str, params=None) -> None:
+                  with pg_admin_conn(dbname) as conn, conn.cursor() as cur:
+                      cur.execute(sql, params or ())
+                      conn.commit()
+
+
+              def pg_insert(dbname: str, table: str, columns: list[str], rows: list[tuple]) -> None:
+                  if not rows:
+                      return
+                  cols = ", ".join(columns)
+                  with pg_admin_conn(dbname) as conn, conn.cursor() as cur:
+                      psycopg2.extras.execute_values(
+                          cur, f"INSERT INTO {table} ({cols}) VALUES %s", rows, page_size=1000)
+                      conn.commit()
+
+
+              def pg_query(dbname: str, sql: str, params=None) -> list[tuple]:
+                  with pg_admin_conn(dbname) as conn, conn.cursor() as cur:
+                      cur.execute(sql, params or ())
+                      return cur.fetchall()
+
+
+              def wait_for_openmetadata(retries: int = 60, delay: int = 10) -> None:
+                  """Block until OpenMetadata answers /health-check (server + DB migrations ready)."""
+                  import time
+                  last = None
+                  for _ in range(retries):
+                      try:
+                          r = requests.get(f"{OM_BASE_URL}/api/v1/system/version", timeout=10)
+                          if r.ok:
+                              return
+                          last = r.status_code
+                      except Exception as e:  # noqa: BLE001
+                          last = e
+                      time.sleep(delay)
+                  raise RuntimeError(f"OpenMetadata not ready at {OM_BASE_URL} (last={last})")
+            data_quality.py: |2
+              """
+              DAG: data_quality
+
+              Profile the sample data and run data-quality RULE PACKS over PostgreSQL, then push the
+              profiles + test results to OpenMetadata and raise an alert. Run after seed_governance.
+
+              Rule packs demonstrated:
+                * standard      — NOT NULL (customer.email), UNIQUE (customer.customer_id),
+                                  range (account.balance_eur ≥ 0);
+                * financial     — currency is a valid ISO-4217 code (account.currency);
+                * distribution  — customer.segment distribution is not degenerate;
+                * similarity     — national_id overlap between enterprise & the public registry;
+                * cross-check   — every account.customer_id exists in customer (referential integrity);
+                * script rule   — custom SQL: negative-balance ratio must stay under a threshold.
+
+              The metrics are always computed + logged; pushing them to OpenMetadata's data-quality API
+              is best-effort (om_try) so the pipeline stays green across OM versions.
+              """
+              from __future__ import annotations
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import (
+                  ENTERPRISE_DB, REGISTRY_DB, om_try, pg_query, wait_for_openmetadata,
+              )
+
+              ISO_CCY = {"EUR", "USD", "GBP", "CHF", "JPY", "PLN"}
+              ENT_TABLE_FQN = "enterprise-postgres.enterprise_dwh.core.account"
+              CUST_TABLE_FQN = "enterprise-postgres.enterprise_dwh.core.customer"
+
+
+              def _q1(dbname: str, sql: str) -> float:
+                  return float(pg_query(dbname, sql)[0][0] or 0)
+
+
+              @dag(dag_id="data_quality", schedule=None,
+                   start_date=pendulum.datetime(2024, 1, 1, tz="UTC"), catchup=False,
+                   tags=["governance", "data-quality"])
+              def data_quality():
+
+                  @task
+                  def wait() -> None:
+                      wait_for_openmetadata()
+
+                  @task
+                  def run_rules() -> dict:
+                      e = ENTERPRISE_DB
+                      rows = int(_q1(e, "SELECT count(*) FROM core.account"))
+                      results: list[dict] = []
+
+                      def check(name: str, kind: str, ok: bool, detail: str) -> None:
+                          results.append({"name": name, "kind": kind,
+                                          "status": "success" if ok else "failed", "detail": detail})
+
+                      # standard
+                      null_emails = int(_q1(e, "SELECT count(*) FROM core.customer WHERE email IS NULL"))
+                      check("customer.email not null", "standard", null_emails == 0,
+                            f"{null_emails} null emails")
+                      dup_ids = int(_q1(e, "SELECT count(*)-count(DISTINCT customer_id) FROM core.customer"))
+                      check("customer.customer_id unique", "standard", dup_ids == 0, f"{dup_ids} duplicates")
+                      neg_bal = int(_q1(e, "SELECT count(*) FROM core.account WHERE balance_eur < 0"))
+                      check("account.balance_eur >= 0", "standard", neg_bal == 0, f"{neg_bal} negatives")
+                      # financial
+                      bad_ccy = int(_q1(e, "SELECT count(*) FROM core.account WHERE currency NOT IN %s"
+                                        % (tuple(ISO_CCY),)))
+                      check("account.currency valid ISO-4217", "financial", bad_ccy == 0,
+                            f"{bad_ccy} invalid currency codes")
+                      # distribution
+                      seg_min = _q1(e, "SELECT min(c) FROM (SELECT count(*) c FROM core.customer "
+                                       "GROUP BY segment) s")
+                      check("customer.segment distribution", "distribution", seg_min > 0,
+                            f"min segment bucket = {seg_min:.0f}")
+                      # cross-check (referential integrity account -> customer)
+                      orphans = int(_q1(e, "SELECT count(*) FROM core.account a LEFT JOIN core.customer c "
+                                        "ON a.customer_id=c.customer_id WHERE c.customer_id IS NULL"))
+                      check("account.customer_id -> customer", "cross-check", orphans == 0,
+                            f"{orphans} orphan accounts")
+                      # similarity (overlap of national_id enterprise vs public registry)
+                      ent_ids = {r[0] for r in pg_query(e, "SELECT national_id FROM core.customer")}
+                      reg_ids = {r[0] for r in pg_query(REGISTRY_DB,
+                                                        "SELECT national_id FROM public.business_registry")}
+                      overlap = len(ent_ids & reg_ids) / max(1, len(reg_ids))
+                      check("national_id registry match", "similarity", overlap >= 0.5,
+                            f"{overlap:.0%} of registry ids matched")
+                      # script rule (custom SQL): negative-balance ratio < 30%
+                      neg_ratio = neg_bal / max(1, rows)
+                      check("script: negative-balance ratio < 30%", "script", neg_ratio < 0.30,
+                            f"{neg_ratio:.0%} negative")
+
+                      failed = [r for r in results if r["status"] == "failed"]
+                      for r in results:
+                          print(f"  [{r['kind']}] {r['name']}: {r['status'].upper()} ({r['detail']})")
+                      return {"rows": rows, "total": len(results), "failed": len(failed),
+                              "results": results, "null_emails": null_emails, "neg_bal": neg_bal}
+
+                  @task
+                  def push_to_openmetadata(dq: dict) -> dict:
+                      # Table profile (best-effort — endpoint shape varies by OM version).
+                      ts = int(pendulum.now("UTC").timestamp() * 1000)
+                      om_try(f"/tables/name/{ENT_TABLE_FQN}/tableProfile", {
+                          "tableProfile": {"timestamp": ts, "rowCount": dq["rows"], "columnCount": 5},
+                          "columnProfile": [
+                              {"name": "balance_eur", "timestamp": ts, "valuesCount": dq["rows"]},
+                              {"name": "customer_id", "timestamp": ts, "valuesCount": dq["rows"]},
+                          ],
+                      }, "table profile")
+                      # A logical test suite + one result per rule (best-effort).
+                      om_try("/dataQuality/testSuites", {
+                          "name": "governance-quality-suite",
+                          "description": "Standard + financial data-quality rule packs.",
+                      }, "test suite")
+                      for r in dq["results"]:
+                          om_try("/dataQuality/testCases", {
+                              "name": r["name"].replace(" ", "-").replace(".", "-").lower(),
+                              "displayName": r["name"],
+                              "description": f"{r['kind']} rule",
+                              "entityLink": f"<#E::table::{ENT_TABLE_FQN}>",
+                              "testDefinition": "tableRowCountToBeBetween",
+                              "testSuite": "governance-quality-suite",
+                          }, f"test case {r['name']}")
+                      # Raise an alert if anything failed (best-effort).
+                      if dq["failed"]:
+                          om_try("/events/subscriptions", {
+                              "name": "data-quality-failures",
+                              "alertType": "Notification",
+                              "description": f"{dq['failed']} data-quality rule(s) failing.",
+                          }, "alert subscription")
+                      return {"pushed": True, "failed_rules": dq["failed"]}
+
+                  w = wait()
+                  dq = run_rules()
+                  w >> dq
+                  push_to_openmetadata(dq)
+
+
+              data_quality()
+            periodic_review.py: |2
+              """
+              DAG: periodic_review
+
+              Automate a periodic data-asset review: scan the catalogued tables in OpenMetadata for
+              signs of poor currency / stewardship — missing OWNER, missing DESCRIPTION — and file a
+              review finding per asset (as an OpenMetadata task/thread, best-effort) plus a printed
+              report. This is the "automation of review processes" (currency, ownership, adequacy).
+
+              Run after seed_governance (and, ideally, build_lineage). Schedule it (e.g. weekly) in the
+              Airflow UI for a recurring review.
+              """
+              from __future__ import annotations
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import om_get, om_try, wait_for_openmetadata
+
+              SERVICES = ["enterprise-postgres", "govregistry-postgres"]
+
+
+              @dag(dag_id="periodic_review", schedule=None,
+                   start_date=pendulum.datetime(2024, 1, 1, tz="UTC"), catchup=False,
+                   tags=["governance", "review"])
+              def periodic_review():
+
+                  @task
+                  def wait() -> None:
+                      wait_for_openmetadata()
+
+                  @task
+                  def review() -> dict:
+                      # List catalogued tables and inspect owner/description/currency.
+                      data = om_get("/tables?limit=1000&fields=owners,description,updatedAt")
+                      tables = data.get("data", []) if isinstance(data, dict) else []
+                      findings: list[dict] = []
+                      now_ms = int(pendulum.now("UTC").timestamp() * 1000)
+                      stale_after_ms = 90 * 24 * 3600 * 1000  # 90 days
+
+                      for t in tables:
+                          fqn = t.get("fullyQualifiedName", t.get("name", "?"))
+                          issues = []
+                          if not (t.get("owners") or t.get("owner")):
+                              issues.append("no owner")
+                          if not (t.get("description") or "").strip():
+                              issues.append("no description")
+                          updated = t.get("updatedAt") or now_ms
+                          if now_ms - int(updated) > stale_after_ms:
+                              issues.append("stale (>90d)")
+                          if issues:
+                              findings.append({"asset": fqn, "issues": issues})
+
+                      for f in findings:
+                          print(f"  REVIEW {f['asset']}: {', '.join(f['issues'])}")
+                          # File a review task/thread on the asset (best-effort; thread API varies by version).
+                          om_try("/feed", {
+                              "message": f"Periodic review: {', '.join(f['issues'])}",
+                              "about": f"<#E::table::{f['asset']}>",
+                              "type": "Task",
+                          }, f"review task {f['asset']}")
+
+                      return {"scanned": len(tables), "flagged": len(findings),
+                              "findings": findings[:50]}
+
+                  wait() >> review()
+
+
+              periodic_review()
+            seed_governance.py: |2
+              """
+              DAG: seed_governance
+
+              Populate OpenMetadata with a realistic governance baseline and seed the PostgreSQL
+              sample sources it describes:
+
+                * two database SERVICES + databases: `enterprise_dwh` (enterprise data warehouse) and
+                  `gov_registry` (a "public administration" external registry) — external-DB integration;
+                * schemas + tables with columns, owners and REGULATION tags — the catalog / master data;
+                * a business GLOSSARY with reference-data terms;
+                * CLASSIFICATIONS for internal & external regulations (GDPR, DORA, BaFin, PII, …);
+                * TEAMS, ROLES and POLICIES — the access matrices (data permissions / democratization).
+
+              Idempotent (OpenMetadata PUT upserts by name). Run first.
+              """
+              from __future__ import annotations
+
+              import pendulum
+              from airflow.decorators import dag, task
+
+              from common import (
+                  ENTERPRISE_DB, ENTERPRISE_SERVICE, REGISTRY_DB, REGISTRY_SERVICE,
+                  om_put, om_try, pg_ensure_database, pg_exec, pg_insert,
+                  wait_for_openmetadata,
+              )
+
+              # Sample catalog: service -> database -> schema -> [ (table, [(col, type, tags)]) ]
+              CATALOG = {
+                  ENTERPRISE_SERVICE: {
+                      "db": ENTERPRISE_DB, "schema": "core",
+                      "tables": {
+                          "customer": [
+                              ("customer_id", "BIGINT", []),
+                              ("full_name", "VARCHAR", ["Regulation.PII"]),
+                              ("national_id", "VARCHAR", ["Regulation.PII", "Regulation.GDPR"]),
+                              ("email", "VARCHAR", ["Regulation.PII"]),
+                              ("segment", "VARCHAR", []),
+                          ],
+                          "account": [
+                              ("account_id", "BIGINT", []),
+                              ("customer_id", "BIGINT", []),
+                              ("currency", "VARCHAR", []),
+                              ("balance_eur", "NUMERIC", ["Regulation.Confidential"]),
+                              ("opened_at", "TIMESTAMP", []),
+                          ],
+                          "transaction": [
+                              ("txn_id", "BIGINT", []),
+                              ("account_id", "BIGINT", []),
+                              ("amount_eur", "NUMERIC", ["Regulation.Confidential"]),
+                              ("txn_ts", "TIMESTAMP", []),
+                              ("counterparty_country", "VARCHAR", []),
+                          ],
+                      },
+                  },
+                  REGISTRY_SERVICE: {
+                      "db": REGISTRY_DB, "schema": "public",
+                      "tables": {
+                          "business_registry": [
+                              ("reg_no", "VARCHAR", []),
+                              ("legal_name", "VARCHAR", []),
+                              ("national_id", "VARCHAR", ["Regulation.PII", "Regulation.GDPR"]),
+                              ("status", "VARCHAR", []),
+                              ("registered_on", "DATE", []),
+                          ],
+                      },
+                  },
+              }
+
+              # Regulations / classifications to seed (classification -> [tags]).
+              CLASSIFICATIONS = {
+                  "Regulation": ["GDPR", "DORA", "BaFin", "PII", "Confidential", "Internal-Policy"],
+              }
+
+              # Business glossary (reference / master data vocabulary).
+              GLOSSARY = "EnterpriseGlossary"
+              GLOSSARY_TERMS = {
+                  "Customer": "A natural or legal person holding one or more accounts.",
+                  "Account": "A financial account owned by a customer; the master record for balances.",
+                  "PII": "Personally Identifiable Information; must be masked/blocked per GDPR.",
+                  "Reference-Currency": "ISO-4217 currency code used as reference data across systems.",
+                  "ICT-Provider": "A third-party ICT service provider tracked for DORA concentration risk.",
+              }
+
+              # Access matrices: policies -> roles -> teams.
+              POLICIES = {
+                  "DataConsumer-Policy": [
+                      {"name": "view-all", "resources": ["All"], "operations": ["ViewAll"], "effect": "allow"},
+                  ],
+                  "DataSteward-Policy": [
+                      {"name": "edit-metadata", "resources": ["All"],
+                       "operations": ["ViewAll", "EditDescription", "EditTags", "EditOwners"], "effect": "allow"},
+                  ],
+              }
+              ROLES = {
+                  "DataConsumer": ["DataConsumer-Policy"],
+                  "DataSteward": ["DataSteward-Policy"],
+              }
+              TEAMS = {
+                  "Finance": "Department",
+                  "DataPlatform": "Department",
+                  "PublicSector": "Department",
+              }
+
+
+              # OpenMetadata requires dataLength for these column types; add a sensible default.
+              _NEEDS_LENGTH = {"VARCHAR", "CHAR", "BINARY", "VARBINARY"}
+
+
+              def _column(name: str, dtype: str, tags: list[str]) -> dict:
+                  col = {"name": name, "dataType": dtype,
+                         "tags": [{"tagFQN": t} for t in tags]}
+                  if dtype in _NEEDS_LENGTH:
+                      col["dataLength"] = 256
+                  return col
+
+
+              @dag(dag_id="seed_governance", schedule=None,
+                   start_date=pendulum.datetime(2024, 1, 1, tz="UTC"), catchup=False,
+                   tags=["governance", "seed"])
+              def seed_governance():
+
+                  @task
+                  def wait() -> None:
+                      wait_for_openmetadata()
+
+                  @task
+                  def seed_postgres() -> dict:
+                      """Create + seed the two sample source databases (superuser)."""
+                      # enterprise_dwh
+                      pg_ensure_database(ENTERPRISE_DB)
+                      pg_exec(ENTERPRISE_DB, """
+                          CREATE SCHEMA IF NOT EXISTS core;
+                          CREATE TABLE IF NOT EXISTS core.customer(
+                            customer_id BIGINT PRIMARY KEY, full_name VARCHAR, national_id VARCHAR,
+                            email VARCHAR, segment VARCHAR);
+                          CREATE TABLE IF NOT EXISTS core.account(
+                            account_id BIGINT PRIMARY KEY, customer_id BIGINT, currency VARCHAR,
+                            balance_eur NUMERIC, opened_at TIMESTAMP);
+                          CREATE TABLE IF NOT EXISTS core.transaction(
+                            txn_id BIGINT PRIMARY KEY, account_id BIGINT, amount_eur NUMERIC,
+                            txn_ts TIMESTAMP, counterparty_country VARCHAR);
+                          TRUNCATE core.customer, core.account, core.transaction;
+                      """)
+                      custs = [(i, f"Customer {i}", f"ID{100000 + i}",
+                                (f"user{i}@example.com" if i % 7 else None),  # some NULL emails (DQ)
+                                ("retail" if i % 3 else "corporate")) for i in range(1, 201)]
+                      pg_insert(ENTERPRISE_DB, "core.customer",
+                                ["customer_id", "full_name", "national_id", "email", "segment"], custs)
+                      accts = [(i, (i % 200) + 1, ("EUR" if i % 4 else "XXX"),  # some invalid currency (DQ)
+                                round(((-1) ** i) * (i * 12.5), 2),             # some negative balances (DQ)
+                                "2023-01-01") for i in range(1, 301)]
+                      pg_insert(ENTERPRISE_DB, "core.account",
+                                ["account_id", "customer_id", "currency", "balance_eur", "opened_at"], accts)
+                      txns = [(i, (i % 300) + 1, round(i * 3.3, 2), "2024-06-01",
+                               ("DE" if i % 5 else "US")) for i in range(1, 501)]
+                      pg_insert(ENTERPRISE_DB, "core.transaction",
+                                ["txn_id", "account_id", "amount_eur", "txn_ts", "counterparty_country"], txns)
+
+                      # gov_registry (public-administration external DB)
+                      pg_ensure_database(REGISTRY_DB)
+                      pg_exec(REGISTRY_DB, """
+                          CREATE TABLE IF NOT EXISTS public.business_registry(
+                            reg_no VARCHAR PRIMARY KEY, legal_name VARCHAR, national_id VARCHAR,
+                            status VARCHAR, registered_on DATE);
+                          TRUNCATE public.business_registry;
+                      """)
+                      reg = [(f"REG{200000 + i}", f"Legal Entity {i}", f"ID{100000 + i}",
+                              ("active" if i % 6 else "dissolved"), "2015-05-05") for i in range(1, 151)]
+                      pg_insert(REGISTRY_DB, "public.business_registry",
+                                ["reg_no", "legal_name", "national_id", "status", "registered_on"], reg)
+                      return {"enterprise_rows": 200 + 300 + 500, "registry_rows": 150}
+
+                  @task
+                  def seed_classifications() -> None:
+                      for cls, tags in CLASSIFICATIONS.items():
+                          om_put("/classifications", {"name": cls,
+                                  "description": f"{cls} tags (internal & external regulations)."})
+                          for t in tags:
+                              om_put("/tags", {"classification": cls, "name": t,
+                                      "description": f"{t} regulation / sensitivity tag."})
+
+                  @task
+                  def seed_glossary() -> None:
+                      om_put("/glossaries", {"name": GLOSSARY, "displayName": "Enterprise Glossary",
+                              "description": "Business glossary — reference & master-data vocabulary."})
+                      for term, desc in GLOSSARY_TERMS.items():
+                          om_put("/glossaryTerms", {"glossary": GLOSSARY, "name": term, "description": desc})
+
+                  @task
+                  def seed_catalog() -> dict:
+                      n_tables = 0
+                      for service, spec in CATALOG.items():
+                          om_put("/services/databaseServices", {
+                              "name": service, "serviceType": "Postgres",
+                              "connection": {"config": {
+                                  "type": "Postgres", "hostPort": "gov-db:5432",
+                                  "username": "openmetadata_user",
+                                  "authType": {"password": "Governance-Demo-1"},
+                                  "database": spec["db"],
+                              }},
+                          })
+                          db_fqn = f"{service}.{spec['db']}"
+                          om_put("/databases", {"name": spec["db"], "service": service})
+                          schema_fqn = f"{db_fqn}.{spec['schema']}"
+                          om_put("/databaseSchemas", {"name": spec["schema"], "database": db_fqn})
+                          for table, cols in spec["tables"].items():
+                              om_put("/tables", {
+                                  "name": table, "databaseSchema": schema_fqn,
+                                  "columns": [_column(c, dt, tags) for c, dt, tags in cols],
+                              })
+                              n_tables += 1
+                      return {"tables": n_tables}
+
+                  @task
+                  def seed_access() -> None:
+                      for name, rules in POLICIES.items():
+                          om_put("/policies", {"name": name, "description": f"{name} (access matrix).",
+                                               "rules": rules})
+                      for name, policies in ROLES.items():
+                          om_put("/roles", {"name": name, "description": f"{name} role.", "policies": policies})
+                      for name, ttype in TEAMS.items():
+                          # teamType Department requires an Organization parent in OM; om_try tolerates
+                          # version differences in the team hierarchy rules.
+                          om_try("/teams", {"name": name, "displayName": name, "teamType": ttype},
+                                 f"team {name}")
+
+                  w = wait()
+                  w >> seed_postgres()
+                  w >> seed_classifications() >> seed_glossary() >> seed_catalog() >> seed_access()
+
+
+              seed_governance()
+      volumes:
+      - name: dags
+        configMap:
+          name: airflow-dags
+          items:
+          - key: .airflowignore
+            path: .airflowignore
+          - key: build_lineage.py
+            path: build_lineage.py
+          - key: common.py
+            path: common.py
+          - key: data_quality.py
+            path: data_quality.py
+          - key: periodic_review.py
+            path: periodic_review.py
+          - key: seed_governance.py
+            path: seed_governance.py
+      volumeMounts:
+      - name: dags
+        mountPath: /opt/airflow/dags
+        readOnly: true
+      # --- END embedded DAGs ---
       env:
       - name: OM_BASE_URL
         value: http://openmetadata:8585
@@ -245,19 +989,19 @@ spec:
             tls:
               enabled: true
   # ----------------------------------------------------------------------- #
-  # Ollama — local LLM for the governance copilot, CPU. Model chosen at import via the
-  # marketplace modelSizes selector ({{MODEL}} placeholder). Reachable at ollama:11434.
+  # Ollama — local LLM for the governance copilot, CPU. Default granite4:350m-h (swap for
+  # granite4:1b-h in models.pull / models.run for higher quality). Reachable at ollama:11434.
   # ----------------------------------------------------------------------- #
   - chartName: ollama
     chartRepo: application-collection
-    chartVersion: 1.55.0
+    chartVersion: 1.76.0
     values:
       fullnameOverride: ollama
       image:
         pullPolicy: IfNotPresent
         registry: dp.apps.rancher.io
         repository: containers/ollama
-        tag: 0.21.2-11.48
+        tag: 0.32.14-11.95
       # Keep the chosen model resident (warm) — memory-friendly on CPU.
       extraEnv:
         - {name: OLLAMA_KEEP_ALIVE, value: "-1"}
@@ -268,9 +1012,9 @@ spec:
           draEnabled: false
         models:
           pull:
-          - "{{MODEL}}"
+          - "granite4:350m-h"
           run:
-          - "{{MODEL}}"
+          - "granite4:350m-h"
         port: 11434
       persistentVolume:
         enabled: true

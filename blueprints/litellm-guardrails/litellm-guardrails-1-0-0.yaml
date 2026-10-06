@@ -11,19 +11,19 @@ metadata:
 # is detected BEFORE anything reaches the model.
 #
 # Components (registry sources):
-#   * ollama      — application-collection (dp.apps.rancher.io), CPU, qwen2.5:0.5b
+#   * ollama      — application-collection (dp.apps.rancher.io), CPU, granite4:350m-h
 #   * litellm     — suse-ai-registry (registry.suse.com/ai/charts), image
 #                   registry.suse.com/ai/containers/litellm-database (needs the
 #                   application-collection pull secret). Bundled standalone Postgres.
 #   * open-webui  — application-collection, pointed at LiteLLM's OpenAI endpoint.
 #   * presidio    — analyzer + anonymizer (mcr.microsoft.com, the one non-SUSE
 #                   dependency; no SUSE image exists) deployed via litellm
-#                   extraResources; always present so the guardrail wizard only has
-#                   to inject proxy config.
+#                   extraResources; always present so adding a Presidio guardrail
+#                   only needs a proxy_config change.
 #
-# The Blueprint Marketplace shows a pre-import WIZARD (see marketplace.yaml) that
-# injects the selected guardrails into the litellm component's proxy_config before
-# this CR is applied. The baseline below ships with guardrails: [] (none active).
+# Presidio PII masking is enabled by default in the litellm component's proxy_config.
+# Further guardrails (PII blocking, hide-secrets, prompt-injection) can be added there
+# before this CR is applied — see this version's README.
 spec:
   source: Custom  # community, unsupported demo blueprint (CRD enum has no "Community")
   displayName: LiteLLM Guardrails (Ollama + Open WebUI)
@@ -31,7 +31,7 @@ spec:
   description: |
     A guarded LLM gateway: Open WebUI talks to a LiteLLM proxy which applies
     guardrails (Presidio PII masking/blocking, secret redaction, prompt-injection
-    detection) and forwards to a local Ollama model (qwen2.5:0.5b, CPU). All chat
+    detection) and forwards to a local Ollama model (granite4:350m-h, CPU). All chat
     goes through LiteLLM, so guardrails are enforced before the model sees anything.
 
     LiteLLM comes from the SUSE AI registry (registry.suse.com/ai); its image is
@@ -45,9 +45,9 @@ spec:
       * A default StorageClass (Ollama, LiteLLM's Postgres, and Open WebUI use PVCs).
       * cert-manager.
 
-    Import via the Blueprint Marketplace (choose guardrails in the wizard), then
-    create an AIWorkload from this Blueprint in the AI Factory UI. When the pods are
-    Ready, open Open WebUI from the marketplace guide and chat — try a prompt with an
+    Edit the guardrails in the litellm proxy_config if needed (see the README),
+    kubectl apply this CR, then create an AIWorkload from this Blueprint in the AI
+    Factory UI. When the pods are Ready, port-forward Open WebUI and chat — try a prompt with an
     email address or credit-card number and watch the guardrail mask or block it.
   components:
   # ----------------------------------------------------------------------------
@@ -55,14 +55,14 @@ spec:
   # ----------------------------------------------------------------------------
   - chartName: ollama
     chartRepo: application-collection
-    chartVersion: 1.55.0
+    chartVersion: 1.76.0
     values:
       fullnameOverride: ollama
       image:
         pullPolicy: IfNotPresent
         registry: dp.apps.rancher.io
         repository: containers/ollama
-        tag: 0.21.2-11.48
+        tag: 0.32.14-11.95
       ollama:
         gpu:
           enabled: false
@@ -71,9 +71,9 @@ spec:
           # A small, CPU-friendly chat model — the demo is about the guardrails,
           # not the model.
           pull:
-          - qwen2.5:0.5b
+          - granite4:350m-h
           run:
-          - qwen2.5:0.5b
+          - granite4:350m-h
         port: 11434
       persistentVolume:
         enabled: true
@@ -89,13 +89,13 @@ spec:
         type: ClusterIP
   # ----------------------------------------------------------------------------
   # LiteLLM — the guarded OpenAI-compatible gateway. Reachable at http://litellm:4000.
-  # proxy_config is rendered to the proxy's config.yaml. The marketplace wizard
-  # appends guardrails / callbacks into this block at import time.
+  # proxy_config is rendered to the proxy's config.yaml. Add or remove
+  # guardrails / callbacks in this block before applying (README ## Guardrails).
   # Presidio analyzer + anonymizer ride along as extraResources (always present).
   # ----------------------------------------------------------------------------
   - chartName: litellm
     chartRepo: suse-ai-registry
-    chartVersion: 1.81.13
+    chartVersion: 1.92.0
     values:
       fullnameOverride: litellm
       # NOTE: the SUSE AI litellm-database image (registry.suse.com/ai) is
@@ -140,17 +140,21 @@ spec:
         litellm_settings:
           drop_params: true
         model_list:
-        - model_name: qwen2.5-0.5b
+        - model_name: granite4-350m
           litellm_params:
-            model: ollama_chat/qwen2.5:0.5b
+            model: ollama_chat/granite4:350m-h
             api_base: http://ollama:11434
-        # Baseline: no guardrails. The marketplace wizard appends entries here
-        # (Presidio PII mask/block, hide-secrets) and callbacks under
-        # litellm_settings (prompt-injection) before this CR is applied.
-        guardrails: []
+        guardrails:
+        # Default: PII masking. Other options (PII blocking, hide-secrets,
+        # prompt-injection) are listed in this version's README.
+        - guardrail_name: presidio-pii-mask
+          litellm_params:
+            guardrail: presidio
+            mode: pre_call
+            default_on: true
       # Presidio PII engine — analyzer detects entities, anonymizer masks them.
       # Public Microsoft images (no SUSE equivalent). Always deployed so selecting
-      # a Presidio guardrail in the wizard needs only a config change.
+      # a Presidio guardrail needs only a proxy_config change.
       extraResources:
       - apiVersion: apps/v1
         kind: Deployment
@@ -251,7 +255,7 @@ spec:
         pullPolicy: IfNotPresent
         registry: dp.apps.rancher.io
         repository: containers/open-webui
-        tag: 0.6.41-14.20
+        tag: 0.6.41-15.24
       global:
         tls:
           source: suse-private-ai
@@ -281,7 +285,7 @@ spec:
       - name: OPENAI_API_KEYS
         value: sk-guardrails-demo
       - name: DEFAULT_MODELS
-        value: qwen2.5-0.5b
+        value: granite4-350m
       ingress:
         enabled: false
       persistence:

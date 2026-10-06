@@ -41,14 +41,14 @@ spec:
   # ----------------------------------------------------------------------------
   - chartName: ollama
     chartRepo: application-collection
-    chartVersion: 1.55.0
+    chartVersion: 1.76.0
     values:
       fullnameOverride: ollama
       image:
         pullPolicy: IfNotPresent
         registry: dp.apps.rancher.io
         repository: containers/ollama
-        tag: 0.21.2-11.48
+        tag: 0.32.14-11.95
       ollama:
         gpu:
           enabled: false
@@ -58,9 +58,9 @@ spec:
           # — accepts image input (unlike the text-only alibayram/* tags). No HF token
           # needed. Use :Q8_0 (5 GB) or :F16 (8.6 GB) for higher fidelity.
           pull:
-          - "{{MODEL}}"
+          - "dcarrascosa/medgemma-1.5-4b-it:Q4_K_M"
           run:
-          - "{{MODEL}}"
+          - "dcarrascosa/medgemma-1.5-4b-it:Q4_K_M"
         port: 11434
       persistentVolume:
         enabled: true
@@ -80,7 +80,7 @@ spec:
   # ----------------------------------------------------------------------------
   - chartName: qdrant
     chartRepo: suse-ai-registry
-    chartVersion: 1.17.0
+    chartVersion: 1.19.0
     values:
       fullnameOverride: qdrant
       persistence:
